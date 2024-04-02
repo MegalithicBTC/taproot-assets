@@ -356,21 +356,12 @@ func (f *AssetWallet) FundPacket(ctx context.Context,
 		return nil, address.ErrMismatchedHRP
 	}
 
-	// Extract the asset ID and group key from the funding descriptor.
-	assetId := fundDesc.AssetSpecifier.UnwrapIdToPtr()
-	if assetId == nil {
-		return nil, fmt.Errorf("unable to unwrap asset ID")
-	}
-
-	groupKey := fundDesc.AssetSpecifier.UnwrapGroupKeyToPtr()
-
 	// We need to find a commitment that has enough assets to satisfy this
 	// send request. We'll map the address to a set of constraints, so we
 	// can use that to do Taproot asset coin selection.
 	constraints := CommitmentConstraints{
-		GroupKey: groupKey,
-		AssetID:  assetId,
-		MinAmt:   fundDesc.Amount,
+		AssetSpecifier: fundDesc.AssetSpecifier,
+		MinAmt:         fundDesc.Amount,
 	}
 	selectedCommitments, err := f.cfg.CoinSelector.SelectCoins(
 		ctx, constraints, PreferMaxAmount,
@@ -393,15 +384,12 @@ func (f *AssetWallet) FundBurn(ctx context.Context,
 		return nil, fmt.Errorf("unable to unwrap asset ID")
 	}
 
-	groupKey := fundDesc.AssetSpecifier.UnwrapGroupKeyToPtr()
-
 	// We need to find a commitment that has enough assets to satisfy this
 	// send request. We'll map the address to a set of constraints, so we
 	// can use that to do Taproot asset coin selection.
 	constraints := CommitmentConstraints{
-		GroupKey: groupKey,
-		AssetID:  assetId,
-		MinAmt:   fundDesc.Amount,
+		AssetSpecifier: fundDesc.AssetSpecifier,
+		MinAmt:         fundDesc.Amount,
 	}
 	selectedCommitments, err := f.cfg.CoinSelector.SelectCoins(
 		ctx, constraints, PreferMaxAmount,
