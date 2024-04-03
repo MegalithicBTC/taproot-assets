@@ -1,4 +1,4 @@
-package commitment
+package commitment_test
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -29,7 +30,9 @@ var (
 	oneAmt  = uint64(1)
 )
 
-func randAssetDetails(t *testing.T, assetType asset.Type) *AssetDetails {
+func randAssetDetails(t *testing.T,
+	assetType asset.Type) *commitment.AssetDetails {
+
 	t.Helper()
 
 	// Generate asset amount.
@@ -46,7 +49,7 @@ func randAssetDetails(t *testing.T, assetType asset.Type) *AssetDetails {
 		assetVersion = asset.V1
 	}
 
-	return &AssetDetails{
+	return &commitment.AssetDetails{
 		Version: assetVersion,
 		Type:    assetType,
 		ScriptKey: keychain.KeyDescriptor{
@@ -75,7 +78,8 @@ func TestNewAssetCommitment(t *testing.T) {
 	genesis2 := asset.RandGenesis(t, asset.Normal)
 	genesis1Collectible := asset.RandGenesis(t, asset.Collectible)
 	genesis1CollectibleProtoAsset := asset.NewAssetNoErr(
-		t, genesis1Collectible, 1, 0, 0, asset.RandScriptKey(t), nil,
+		t, genesis1Collectible, 1, 0, 0, asset.RandScriptKey(t),
+		nil,
 	)
 	group1Anchor := randAsset(t, genesis1, nil)
 	groupKey1, group1PrivBytes := asset.RandGroupKeyWithSigner(
@@ -129,7 +133,7 @@ func TestNewAssetCommitment(t *testing.T) {
 					randAsset(t, genesis1, groupKey2),
 				}
 			},
-			err: ErrAssetGroupKeyMismatch,
+			err: commitment.ErrAssetGroupKeyMismatch,
 		},
 		{
 			name: "no group key asset id mismatch",
@@ -139,7 +143,7 @@ func TestNewAssetCommitment(t *testing.T) {
 					randAsset(t, genesis2, nil),
 				}
 			},
-			err: ErrAssetGenesisMismatch,
+			err: commitment.ErrAssetGenesisMismatch,
 		},
 		{
 			name: "duplicate script key",
@@ -149,7 +153,7 @@ func TestNewAssetCommitment(t *testing.T) {
 				asset1.ScriptKey = asset2.ScriptKey
 				return []*asset.Asset{asset1, asset2}
 			},
-			err: ErrAssetDuplicateScriptKey,
+			err: commitment.ErrAssetDuplicateScriptKey,
 		},
 		{
 			name: "valid normal asset commitment with group reissue",
@@ -205,7 +209,9 @@ func TestNewAssetCommitment(t *testing.T) {
 	for _, testCase := range testCases {
 		success := t.Run(testCase.name, func(t *testing.T) {
 			assets := testCase.f()
-			commitment, err := NewAssetCommitment(assets...)
+			commitment, err := commitment.NewAssetCommitment(
+				assets...,
+			)
 			require.ErrorIs(t, err, testCase.err)
 			if testCase.err == nil {
 				// Ensure that the Taproot Asset commitment was
@@ -242,14 +248,14 @@ func TestMintTapCommitment(t *testing.T) {
 	testCases := []struct {
 		name  string
 		g     asset.Genesis
-		f     func() *AssetDetails
+		f     func() *commitment.AssetDetails
 		valid bool
 	}{
 		{
 			name: "normal with nil amount",
 			g:    genesisNormal,
-			f: func() *AssetDetails {
-				return &AssetDetails{
+			f: func() *commitment.AssetDetails {
+				return &commitment.AssetDetails{
 					Type:             asset.Normal,
 					ScriptKey:        pubKey,
 					Amount:           nil,
@@ -262,8 +268,8 @@ func TestMintTapCommitment(t *testing.T) {
 		{
 			name: "normal with zero amount",
 			g:    genesisNormal,
-			f: func() *AssetDetails {
-				return &AssetDetails{
+			f: func() *commitment.AssetDetails {
+				return &commitment.AssetDetails{
 					Type:             asset.Normal,
 					ScriptKey:        pubKey,
 					Amount:           &zeroAmt,
@@ -276,9 +282,9 @@ func TestMintTapCommitment(t *testing.T) {
 		{
 			name: "normal with amount",
 			g:    genesisNormal,
-			f: func() *AssetDetails {
+			f: func() *commitment.AssetDetails {
 				amount := uint64(10)
-				return &AssetDetails{
+				return &commitment.AssetDetails{
 					Type:             asset.Normal,
 					ScriptKey:        pubKey,
 					Amount:           &amount,
@@ -291,9 +297,9 @@ func TestMintTapCommitment(t *testing.T) {
 		{
 			name: "collectible with invalid amount",
 			g:    genesisCollectible,
-			f: func() *AssetDetails {
+			f: func() *commitment.AssetDetails {
 				two := uint64(2)
-				return &AssetDetails{
+				return &commitment.AssetDetails{
 					Type:             asset.Collectible,
 					ScriptKey:        pubKey,
 					Amount:           &two,
@@ -306,8 +312,8 @@ func TestMintTapCommitment(t *testing.T) {
 		{
 			name: "collectible with nil amount",
 			g:    genesisCollectible,
-			f: func() *AssetDetails {
-				return &AssetDetails{
+			f: func() *commitment.AssetDetails {
+				return &commitment.AssetDetails{
 					Type:             asset.Collectible,
 					ScriptKey:        pubKey,
 					Amount:           nil,
@@ -320,8 +326,8 @@ func TestMintTapCommitment(t *testing.T) {
 		{
 			name: "collectible with one amount",
 			g:    genesisCollectible,
-			f: func() *AssetDetails {
-				return &AssetDetails{
+			f: func() *commitment.AssetDetails {
+				return &commitment.AssetDetails{
 					Type:             asset.Collectible,
 					ScriptKey:        pubKey,
 					Amount:           &oneAmt,
@@ -334,8 +340,8 @@ func TestMintTapCommitment(t *testing.T) {
 		{
 			name: "invalid asset type",
 			g:    asset.RandGenesis(t, asset.Type(255)),
-			f: func() *AssetDetails {
-				return &AssetDetails{
+			f: func() *commitment.AssetDetails {
+				return &commitment.AssetDetails{
 					Type:             asset.Type(255),
 					ScriptKey:        pubKey,
 					Amount:           nil,
@@ -362,7 +368,9 @@ func TestMintTapCommitment(t *testing.T) {
 
 			switch {
 			case invalidNormalAmt || invalidCollctibleAmt:
-				_, _, err = Mint(testCase.g, nil, details)
+				_, _, err = commitment.Mint(
+					testCase.g, nil, details,
+				)
 
 			default:
 				trueAmt := amt
@@ -382,7 +390,9 @@ func TestMintTapCommitment(t *testing.T) {
 					t, testCase.g, protoAsset,
 				)
 
-				_, _, err = Mint(testCase.g, groupKey, details)
+				_, _, err = commitment.Mint(
+					testCase.g, groupKey, details,
+				)
 			}
 
 			if testCase.valid {
@@ -406,10 +416,10 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 
 	const assetType = asset.Normal
 	const numAssets = 5
-	var anchorDetails *AssetDetails
+	var anchorDetails *commitment.AssetDetails
 
 	genesis1 := asset.RandGenesis(t, assetType)
-	assetDetails := make([]*AssetDetails, 0, numAssets)
+	assetDetails := make([]*commitment.AssetDetails, 0, numAssets)
 	for i := 0; i < numAssets; i++ {
 		details := randAssetDetails(t, assetType)
 		assetDetails = append(assetDetails, details)
@@ -427,17 +437,19 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 	groupKey1 := asset.RandGroupKey(t, genesis1, genesis1ProtoAsset)
 
 	// Mint a new Taproot Asset commitment with the included assets.
-	commitment, assets, err := Mint(genesis1, groupKey1, assetDetails...)
+	mintCommitment, assets, err := commitment.Mint(
+		genesis1, groupKey1, assetDetails...,
+	)
 	require.NoError(t, err)
 
 	proveAssets := func(assets []*asset.Asset, includesAsset,
 		includesAssetGroup bool) {
 
 		t.Helper()
-		for _, asset := range assets {
-			proofAsset, proof, err := commitment.Proof(
-				asset.TapCommitmentKey(),
-				asset.AssetCommitmentKey(),
+		for _, a := range assets {
+			proofAsset, proof, err := mintCommitment.Proof(
+				a.TapCommitmentKey(),
+				a.AssetCommitmentKey(),
 			)
 			require.NoError(t, err)
 			require.Equal(t, includesAsset, proofAsset != nil)
@@ -448,25 +460,26 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 				require.Nil(t, proof.AssetProof)
 			}
 
-			var tapCommitment *TapCommitment
+			var tapCommitment *commitment.TapCommitment
 
 			switch {
 			case includesAsset && includesAssetGroup:
 				tapCommitment, err = proof.DeriveByAssetInclusion(
-					asset,
+					a,
 				)
 			case !includesAsset && includesAssetGroup:
 				tapCommitment, err = proof.DeriveByAssetExclusion(
-					asset.AssetCommitmentKey(),
+					a.AssetCommitmentKey(),
 				)
 			case !includesAsset && !includesAssetGroup:
 				tapCommitment, err = proof.DeriveByAssetCommitmentExclusion(
-					asset.TapCommitmentKey(),
+					a.TapCommitmentKey(),
 				)
 			}
 			require.NoError(t, err)
 			require.Equal(
-				t, commitment.TapLeaf(), tapCommitment.TapLeaf(),
+				t, mintCommitment.TapLeaf(),
+				tapCommitment.TapLeaf(),
 			)
 		}
 	}
@@ -477,7 +490,7 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 	// Now, we'll compute proofs for assets of the same group but not
 	// included in the above Taproot Asset commitment (non-inclusion
 	// proofs).
-	_, nonExistentAssets, err := Mint(
+	_, nonExistentAssets, err := commitment.Mint(
 		genesis1, groupKey1, randAssetDetails(t, assetType),
 	)
 	require.NoError(t, err)
@@ -495,7 +508,7 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 		asset.WithAssetVersion(anchorDetails.Version),
 	)
 	groupKey2 := asset.RandGroupKey(t, genesis2, genesis2ProtoAsset)
-	_, nonExistentAssetGroup, err := Mint(
+	_, nonExistentAssetGroup, err := commitment.Mint(
 		genesis2, groupKey2, assetDetails...,
 	)
 	require.NoError(t, err)
@@ -512,30 +525,35 @@ func TestSplitCommitment(t *testing.T) {
 	genesisCollectible := asset.RandGenesis(t, asset.Collectible)
 	normalProtoAsset := randAsset(t, genesisNormal, nil)
 	collectibleProtoAsset := randAsset(t, genesisCollectible, nil)
-	groupKeyNormal := asset.RandGroupKey(t, genesisNormal, normalProtoAsset)
+	groupKeyNormal := asset.RandGroupKey(
+		t, genesisNormal, normalProtoAsset,
+	)
 	groupKeyCollectible := asset.RandGroupKey(
 		t, genesisCollectible, collectibleProtoAsset,
 	)
 
 	testCases := []struct {
 		name string
-		f    func() (*asset.Asset, *SplitLocator, []*SplitLocator)
-		err  error
+		f    func() (*asset.Asset, *commitment.SplitLocator,
+			[]*commitment.SplitLocator)
+		err error
 	}{
 		{
 			name: "collectible split with excess external locators",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisCollectible,
 					groupKeyCollectible,
 				)
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisCollectible.ID(),
 					ScriptKey:   asset.NUMSCompressedKey,
 					Amount:      0,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisCollectible.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -548,22 +566,24 @@ func TestSplitCommitment(t *testing.T) {
 				}}
 				return input, root, external
 			},
-			err: ErrInvalidSplitLocatorCount,
+			err: commitment.ErrInvalidSplitLocatorCount,
 		},
 		{
 			name: "collectible split commitment",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisCollectible,
 					groupKeyCollectible,
 				)
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisCollectible.ID(),
 					ScriptKey:   asset.NUMSCompressedKey,
 					Amount:      0,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisCollectible.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -575,12 +595,14 @@ func TestSplitCommitment(t *testing.T) {
 		},
 		{
 			name: "invalid split amount",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				splitAmount := input.Amount / 4
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey: asset.ToSerialized(
@@ -588,7 +610,7 @@ func TestSplitCommitment(t *testing.T) {
 					),
 					Amount: splitAmount,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey: asset.ToSerialized(
@@ -598,17 +620,19 @@ func TestSplitCommitment(t *testing.T) {
 				}}
 				return input, root, external
 			},
-			err: ErrInvalidSplitAmount,
+			err: commitment.ErrInvalidSplitAmount,
 		},
 		{
 			name: "single input split commitment",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				input.Amount = 3
 
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey: asset.ToSerialized(
@@ -616,7 +640,7 @@ func TestSplitCommitment(t *testing.T) {
 					),
 					Amount: 1,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -635,13 +659,15 @@ func TestSplitCommitment(t *testing.T) {
 		},
 		{
 			name: "no external splits",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				input.Amount = 3
 
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey: asset.ToSerialized(
@@ -652,23 +678,25 @@ func TestSplitCommitment(t *testing.T) {
 
 				return input, root, nil
 			},
-			err: ErrInvalidSplitLocator,
+			err: commitment.ErrInvalidSplitLocator,
 		},
 		{
 			name: "un-spendable root locator with non-zero amount",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				input.Amount = 3
 
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.NUMSCompressedKey,
 					Amount:      1,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -677,17 +705,19 @@ func TestSplitCommitment(t *testing.T) {
 
 				return input, root, external
 			},
-			err: ErrNonZeroSplitAmount,
+			err: commitment.ErrNonZeroSplitAmount,
 		},
 		{
 			name: "invalid zero-value root locator",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				input.Amount = 3
 
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey: asset.ToSerialized(
@@ -695,7 +725,7 @@ func TestSplitCommitment(t *testing.T) {
 					),
 					Amount: 0,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -704,17 +734,19 @@ func TestSplitCommitment(t *testing.T) {
 
 				return input, root, external
 			},
-			err: ErrInvalidScriptKey,
+			err: commitment.ErrInvalidScriptKey,
 		},
 		{
 			name: "zero-value external locator",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				input.Amount = 3
 
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey: asset.ToSerialized(
@@ -722,7 +754,7 @@ func TestSplitCommitment(t *testing.T) {
 					),
 					Amount: 3,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -731,23 +763,25 @@ func TestSplitCommitment(t *testing.T) {
 
 				return input, root, external
 			},
-			err: ErrZeroSplitAmount,
+			err: commitment.ErrZeroSplitAmount,
 		},
 		{
 			name: "full value split commitment",
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
 				input.Amount = 3
 
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.NUMSCompressedKey,
 					Amount:      0,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -765,7 +799,9 @@ func TestSplitCommitment(t *testing.T) {
 			// external split amounts is equal to the input amount.
 			// The underflow attempt should fail and an error
 			// should be returned.
-			f: func() (*asset.Asset, *SplitLocator, []*SplitLocator) {
+			f: func() (*asset.Asset, *commitment.SplitLocator,
+				[]*commitment.SplitLocator) {
+
 				input := randAsset(
 					t, genesisNormal, groupKeyNormal,
 				)
@@ -774,13 +810,13 @@ func TestSplitCommitment(t *testing.T) {
 				rootScriptKey := asset.ToSerialized(
 					input.ScriptKey.PubKey,
 				)
-				root := &SplitLocator{
+				root := &commitment.SplitLocator{
 					OutputIndex: 0,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   rootScriptKey,
 					Amount:      1,
 				}
-				external := []*SplitLocator{{
+				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
 					ScriptKey:   asset.RandSerializedKey(t),
@@ -794,18 +830,18 @@ func TestSplitCommitment(t *testing.T) {
 
 				return input, root, external
 			},
-			err: ErrInvalidSplitAmount,
+			err: commitment.ErrInvalidSplitAmount,
 		},
 	}
 
 	for _, testCase := range testCases {
 		success := t.Run(testCase.name, func(t *testing.T) {
 			input, root, external := testCase.f()
-			inputs := []SplitCommitmentInput{{
+			inputs := []commitment.SplitCommitmentInput{{
 				Asset:    input,
 				OutPoint: outPoint,
 			}}
-			split, err := NewSplitCommitment(
+			split, err := commitment.NewSplitCommitment(
 				context.Background(), inputs, root, external...,
 			)
 			require.Equal(t, testCase.err, err)
@@ -914,13 +950,13 @@ func TestTapCommitmentKeyPopulation(t *testing.T) {
 			)
 		}
 
-		commitment, err := NewAssetCommitment(a)
+		newCommitment, err := commitment.NewAssetCommitment(a)
 		require.NoError(t, err)
 
 		// The Taproot Asset commitment key value MUST always be set for
 		// the commitment to be well-formed.
 		var zero [32]byte
-		if commitment.TapCommitmentKey() == zero {
+		if newCommitment.TapCommitmentKey() == zero {
 			t.Log("commitment has blank Taproot Asset commitment " +
 				"key!")
 			return false
@@ -975,9 +1011,9 @@ func TestUpdateAssetCommitment(t *testing.T) {
 
 	// Create two AssetCommitments, both including one asset.
 	// One AssetCommitment includes an asset with a group key.
-	groupAssetCommitment, err := NewAssetCommitment(group1Anchor)
+	groupAssetCommitment, err := commitment.NewAssetCommitment(group1Anchor)
 	require.NoError(t, err)
-	soloAssetCommitment, err := NewAssetCommitment(assetNoGroup)
+	soloAssetCommitment, err := commitment.NewAssetCommitment(assetNoGroup)
 	require.NoError(t, err)
 
 	testCases := []struct {
@@ -993,7 +1029,7 @@ func TestUpdateAssetCommitment(t *testing.T) {
 				return nil, groupAssetCommitment.Upsert(mismatchedAsset)
 			},
 			numAssets: 0,
-			err:       ErrAssetGroupKeyMismatch,
+			err:       commitment.ErrAssetGroupKeyMismatch,
 		},
 		{
 			name: "asset type mismatch",
@@ -1002,7 +1038,7 @@ func TestUpdateAssetCommitment(t *testing.T) {
 				return nil, groupAssetCommitment.Upsert(mismatchedAsset)
 			},
 			numAssets: 0,
-			err:       ErrAssetTypeMismatch,
+			err:       commitment.ErrAssetTypeMismatch,
 		},
 		{
 			name: "fresh asset commitment",
@@ -1035,7 +1071,7 @@ func TestUpdateAssetCommitment(t *testing.T) {
 
 	for _, testCase := range testCases {
 		success := t.Run(testCase.name, func(t *testing.T) {
-			asset, err := testCase.f()
+			a, err := testCase.f()
 			require.Equal(t, testCase.err, err)
 
 			// Verify the number of assets in the updated AssetCommitment,
@@ -1048,7 +1084,7 @@ func TestUpdateAssetCommitment(t *testing.T) {
 					assets := soloAssetCommitment.Assets()
 					require.Equal(t, len(assets), testCase.numAssets)
 					_, ok := groupAssetCommitment.Asset(
-						asset.AssetCommitmentKey(),
+						a.AssetCommitmentKey(),
 					)
 					require.False(t, ok)
 
@@ -1056,8 +1092,8 @@ func TestUpdateAssetCommitment(t *testing.T) {
 				case 1:
 					assets := groupAssetCommitment.Assets()
 					require.Equal(t, len(assets), testCase.numAssets)
-					require.True(t, asset.DeepEqual(
-						assets[asset.AssetCommitmentKey()],
+					require.True(t, a.DeepEqual(
+						assets[a.AssetCommitmentKey()],
 					))
 
 				// insertion of collectible with group key.
@@ -1065,10 +1101,10 @@ func TestUpdateAssetCommitment(t *testing.T) {
 					assets := groupAssetCommitment.Assets()
 					require.Equal(t, len(assets), testCase.numAssets)
 					committedAsset, ok := groupAssetCommitment.Asset(
-						asset.AssetCommitmentKey(),
+						a.AssetCommitmentKey(),
 					)
 					require.True(t, ok)
-					require.True(t, asset.DeepEqual(
+					require.True(t, a.DeepEqual(
 						committedAsset,
 					))
 				}
@@ -1112,16 +1148,16 @@ func TestUpdateTapCommitment(t *testing.T) {
 		asset.WithAssetVersion(protoAsset2.Version),
 	)
 
-	assetCommitment1, err := NewAssetCommitment(asset1)
+	assetCommitment1, err := commitment.NewAssetCommitment(asset1)
 	require.NoError(t, err)
 
 	commitmentKey1 := assetCommitment1.TapCommitmentKey()
 
-	assetCommitment2, err := NewAssetCommitment(asset2)
+	assetCommitment2, err := commitment.NewAssetCommitment(asset2)
 	require.NoError(t, err)
 
 	commitmentKey2 := assetCommitment2.TapCommitmentKey()
-	assetCommitment3, err := NewAssetCommitment(asset3)
+	assetCommitment3, err := commitment.NewAssetCommitment(asset3)
 	require.NoError(t, err)
 	commitmentKey3 := assetCommitment3.TapCommitmentKey()
 
@@ -1133,25 +1169,25 @@ func TestUpdateTapCommitment(t *testing.T) {
 	require.NoError(t, err)
 	cp3, err := assetCommitment3.Copy()
 	require.NoError(t, err)
-	commitment, err := NewTapCommitment(cp1, cp2, cp3)
+	tc, err := commitment.NewTapCommitment(cp1, cp2, cp3)
 	require.NoError(t, err)
-	require.Len(t, commitment.Commitments(), 2)
-	require.Len(t, commitment.CommittedAssets(), 3)
+	require.Len(t, tc.Commitments(), 2)
+	require.Len(t, tc.CommittedAssets(), 3)
 
 	require.Equal(t, commitmentKey1, commitmentKey3)
 
 	// Make sure we can still generate proper proofs for all assets.
-	p1, _, err := commitment.Proof(
+	p1, _, err := tc.Proof(
 		commitmentKey1, asset1.AssetCommitmentKey(),
 	)
 	require.NoError(t, err)
 	require.True(t, p1.DeepEqual(asset1))
-	p2, _, err := commitment.Proof(
+	p2, _, err := tc.Proof(
 		commitmentKey2, asset2.AssetCommitmentKey(),
 	)
 	require.NoError(t, err)
 	require.True(t, p2.DeepEqual(asset2))
-	p3, _, err := commitment.Proof(
+	p3, _, err := tc.Proof(
 		commitmentKey3, asset3.AssetCommitmentKey(),
 	)
 	require.NoError(t, err)
@@ -1159,28 +1195,28 @@ func TestUpdateTapCommitment(t *testing.T) {
 
 	// Mint a new Taproot Asset commitment with only the first
 	// assetCommitment.
-	commitment, err = NewTapCommitment(assetCommitment1)
+	tc, err = commitment.NewTapCommitment(assetCommitment1)
 	require.NoError(t, err)
 
-	copyOfCommitment, err := NewTapCommitment(assetCommitment1)
+	copyOfCommitment, err := commitment.NewTapCommitment(assetCommitment1)
 	require.NoError(t, err)
 
 	// Check that the assetCommitment map has only the first assetCommitment.
-	assetCommitments := commitment.Commitments()
+	assetCommitments := tc.Commitments()
 	require.Equal(t, len(assetCommitments), 1)
 	require.Equal(t, assetCommitments[commitmentKey1], assetCommitment1)
 
 	// Verify commitment deletion with an empty assetCommitment map
 	// and a proof of non inclusion.
-	require.NoError(t, commitment.Delete(assetCommitment1))
+	require.NoError(t, tc.Delete(assetCommitment1))
 
-	proofAsset1, _, err := commitment.Proof(
+	proofAsset1, _, err := tc.Proof(
 		commitmentKey1, asset1.AssetCommitmentKey(),
 	)
 	require.NoError(t, err)
 	require.Nil(t, proofAsset1)
 
-	assetCommitments = commitment.Commitments()
+	assetCommitments = tc.Commitments()
 	require.Equal(t, len(assetCommitments), 0)
 
 	// Verify commitment insertion with a proof of inclusion and checking the
@@ -1198,7 +1234,7 @@ func TestUpdateTapCommitment(t *testing.T) {
 
 	// Make a new Taproot Asset commitment directly from the same assets,
 	// and check equality with the version made via upserts.
-	commitmentFromAssets, err := FromAssets(asset1, asset2)
+	commitmentFromAssets, err := commitment.FromAssets(asset1, asset2)
 	require.NoError(t, err)
 
 	require.Equal(
@@ -1251,7 +1287,7 @@ func TestAssetCommitmentDeepCopy(t *testing.T) {
 	asset1 := randAsset(t, genesis, nil)
 	asset2 := randAsset(t, genesis, nil)
 
-	assetCommitment, err := NewAssetCommitment(asset1, asset2)
+	assetCommitment, err := commitment.NewAssetCommitment(asset1, asset2)
 	require.NoError(t, err)
 
 	// Next, we'll copy the commitment and ensure that we get the exact
@@ -1293,15 +1329,15 @@ func TestTapCommitmentDeepCopy(t *testing.T) {
 		asset.WithAssetVersion(protoAsset2.Version),
 	)
 
-	assetCommitment1, err := NewAssetCommitment(asset1)
+	assetCommitment1, err := commitment.NewAssetCommitment(asset1)
 	require.NoError(t, err)
 
-	assetCommitment2, err := NewAssetCommitment(asset2)
+	assetCommitment2, err := commitment.NewAssetCommitment(asset2)
 	require.NoError(t, err)
 
 	// With both commitments created, we'll now make a new Taproot Asset
 	// commitment then copy it.
-	tapCommitment, err := NewTapCommitment(
+	tapCommitment, err := commitment.NewTapCommitment(
 		assetCommitment1, assetCommitment2,
 	)
 	require.NoError(t, err)
@@ -1322,8 +1358,12 @@ func TestTapCommitmentDeepCopy(t *testing.T) {
 func TestIsTaprootAssetCommitmentScript(t *testing.T) {
 	t.Parallel()
 
-	require.True(t, IsTaprootAssetCommitmentScript(testTapCommitmentScript))
-	require.False(t, IsTaprootAssetCommitmentScript(TaprootAssetsMarker[:]))
+	require.True(t, commitment.IsTaprootAssetCommitmentScript(
+		testTapCommitmentScript,
+	))
+	require.False(t, commitment.IsTaprootAssetCommitmentScript(
+		commitment.TaprootAssetsMarker[:],
+	))
 }
 
 // TestAssetCommitmentNoWitness tests that an asset commitment of a v1 asset is
@@ -1360,10 +1400,10 @@ func TestAssetCommitmentNoWitness(t *testing.T) {
 	asset1.PrevWitnesses[0].TxWitness = [][]byte{randTxid[:]}
 
 	// Next, we'll use the assets to create two root tap commitments.
-	commitmentWitness, err := FromAssets(asset1)
+	commitmentWitness, err := commitment.FromAssets(asset1)
 	require.NoError(t, err)
 
-	commitmentNoWitness, err := FromAssets(assetNoWitness)
+	commitmentNoWitness, err := commitment.FromAssets(assetNoWitness)
 	require.NoError(t, err)
 
 	// The two commitment should be identical as this asset version leaves
@@ -1376,7 +1416,7 @@ func TestAssetCommitmentNoWitness(t *testing.T) {
 	// If we make the asset into a V0 asset, then recompute the commitment,
 	// we should get a distinct root.
 	asset1.Version = asset.V0
-	commitmentV0, err := FromAssets(asset1)
+	commitmentV0, err := commitment.FromAssets(asset1)
 	require.NoError(t, err)
 
 	require.NotEqual(
@@ -1402,7 +1442,7 @@ func TestTapCommitmentUpsertMaxVersion(t *testing.T) {
 	asset2.Version = asset.V1
 
 	// Next, we'll create a new commitment with just the first asset.
-	tapCommitment, err := FromAssets(asset1)
+	tapCommitment, err := commitment.FromAssets(asset1)
 	require.NoError(t, err)
 
 	// The version should be zero, as the asset version is 0.
@@ -1410,7 +1450,7 @@ func TestTapCommitmentUpsertMaxVersion(t *testing.T) {
 
 	// Next, we'll upsert the second asset, which should bump the version
 	// to v1.
-	assetCommitment, err := NewAssetCommitment(asset2)
+	assetCommitment, err := commitment.NewAssetCommitment(asset2)
 	require.NoError(t, err)
 
 	require.NoError(t, tapCommitment.Upsert(assetCommitment))
@@ -1446,7 +1486,7 @@ func TestTapCommitmentDeleteMaxVersion(t *testing.T) {
 	asset2.Version = asset.V1
 
 	// Next, we'll create a new commitment with both assets.
-	tapCommitment, err := FromAssets(asset1, asset2)
+	tapCommitment, err := commitment.FromAssets(asset1, asset2)
 	require.NoError(t, err)
 
 	// The version should be 1 as that's the max version of the assets.
@@ -1477,7 +1517,7 @@ func TestAssetCommitmentUpsertMaxVersion(t *testing.T) {
 	asset2.Version = asset.V1
 
 	// Next, we'll create a new commitment with just the first asset.
-	assetCommitment, err := NewAssetCommitment(asset1)
+	assetCommitment, err := commitment.NewAssetCommitment(asset1)
 	require.NoError(t, err)
 
 	// The version should be zero, as the asset version is 0.
@@ -1506,7 +1546,7 @@ func TestAssetCommitmentDeleteMaxVersion(t *testing.T) {
 	asset2.Version = asset.V1
 
 	// Next, we'll create a new commitment with both assets.
-	assetCommitment, err := NewAssetCommitment(asset1, asset2)
+	assetCommitment, err := commitment.NewAssetCommitment(asset1, asset2)
 	require.NoError(t, err)
 
 	// The version should be 1 as that's the max version of the assets.
