@@ -1,4 +1,4 @@
-package tappsbt
+package tappsbt_test
 
 import (
 	"bytes"
@@ -10,10 +10,13 @@ import (
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/internal/test"
+	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/stretchr/testify/require"
 )
 
 var (
+	testParams = &address.MainNetTap
+
 	generatedTestVectorName = "psbt_encoding_generated.json"
 
 	allTestVectorFiles = []string{
@@ -24,7 +27,7 @@ var (
 
 // assertEqualPackets asserts that two packets are equal and prints a nice diff
 // if they are not.
-func assertEqualPackets(t *testing.T, expected, actual *VPacket) {
+func assertEqualPackets(t *testing.T, expected, actual *tappsbt.VPacket) {
 	if !reflect.DeepEqual(expected.ChainParams, actual.ChainParams) {
 		require.Equal(t, expected.ChainParams, actual.ChainParams)
 		require.Fail(t, "ChainParams not equal")
@@ -58,8 +61,8 @@ func assertEqualPackets(t *testing.T, expected, actual *VPacket) {
 func TestEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	testVectors := &TestVectors{}
-	assertEncodingDecoding := func(comment string, pkg *VPacket) {
+	testVectors := &tappsbt.TestVectors{}
+	assertEncodingDecoding := func(comment string, pkg *tappsbt.VPacket) {
 		// Encode the packet as a PSBT packet then as base64.
 		packet, err := pkg.EncodeAsPsbt()
 		require.NoError(t, err)
@@ -69,8 +72,8 @@ func TestEncodingDecoding(t *testing.T) {
 		require.NoError(t, err)
 
 		testVectors.ValidTestCases = append(
-			testVectors.ValidTestCases, &ValidTestCase{
-				Packet: NewTestFromVPacket(t, pkg),
+			testVectors.ValidTestCases, &tappsbt.ValidTestCase{
+				Packet: tappsbt.NewTestFromVPacket(t, pkg),
 				Expected: base64.StdEncoding.EncodeToString(
 					buf.Bytes(),
 				),
@@ -79,13 +82,13 @@ func TestEncodingDecoding(t *testing.T) {
 		)
 
 		// Make sure we can read the packet back from the raw bytes.
-		decoded, err := NewFromRawBytes(&buf, false)
+		decoded, err := tappsbt.NewFromRawBytes(&buf, false)
 		require.NoError(t, err)
 
 		assertEqualPackets(t, pkg, decoded)
 
 		// Also make sure we can decode the packet from the base PSBT.
-		decoded, err = NewFromPsbt(packet)
+		decoded, err = tappsbt.NewFromPsbt(packet)
 		require.NoError(t, err)
 
 		assertEqualPackets(t, pkg, decoded)
@@ -93,18 +96,20 @@ func TestEncodingDecoding(t *testing.T) {
 
 	testCases := []struct {
 		name string
-		pkg  func(t *testing.T) *VPacket
+		pkg  func(t *testing.T) *tappsbt.VPacket
 	}{{
 		name: "minimal packet",
-		pkg: func(t *testing.T) *VPacket {
+		pkg: func(t *testing.T) *tappsbt.VPacket {
 			proofCourierAddr := address.RandProofCourierAddr(t)
 			addr, _, _ := address.RandAddr(
 				t, testParams, proofCourierAddr,
 			)
 
-			pkg, err := FromAddresses([]*address.Tap{addr.Tap}, 1)
+			pkg, err := tappsbt.FromAddresses(
+				[]*address.Tap{addr.Tap}, 1,
+			)
 			require.NoError(t, err)
-			pkg.Outputs = append(pkg.Outputs, &VOutput{
+			pkg.Outputs = append(pkg.Outputs, &tappsbt.VOutput{
 				ScriptKey: asset.RandScriptKey(t),
 			})
 
@@ -112,8 +117,8 @@ func TestEncodingDecoding(t *testing.T) {
 		},
 	}, {
 		name: "random packet",
-		pkg: func(t *testing.T) *VPacket {
-			return RandPacket(t)
+		pkg: func(t *testing.T) *tappsbt.VPacket {
+			return tappsbt.RandPacket(t)
 		},
 	}}
 
@@ -141,7 +146,7 @@ func TestBIPTestVectors(t *testing.T) {
 	for idx := range allTestVectorFiles {
 		var (
 			fileName    = allTestVectorFiles[idx]
-			testVectors = &TestVectors{}
+			testVectors = &tappsbt.TestVectors{}
 		)
 		test.ParseTestVectors(t, fileName, &testVectors)
 		t.Run(fileName, func(tt *testing.T) {
@@ -153,7 +158,7 @@ func TestBIPTestVectors(t *testing.T) {
 }
 
 // runBIPTestVector runs the tests in a single BIP test vector file.
-func runBIPTestVector(t *testing.T, testVectors *TestVectors) {
+func runBIPTestVector(t *testing.T, testVectors *tappsbt.TestVectors) {
 	for _, validCase := range testVectors.ValidTestCases {
 		validCase := validCase
 
@@ -169,7 +174,7 @@ func runBIPTestVector(t *testing.T, testVectors *TestVectors) {
 
 			// Create nice diff if things don't match.
 			if !areEqual {
-				expectedPacket, err := NewFromRawBytes(
+				expectedPacket, err := tappsbt.NewFromRawBytes(
 					strings.NewReader(validCase.Expected),
 					true,
 				)
@@ -185,7 +190,7 @@ func runBIPTestVector(t *testing.T, testVectors *TestVectors) {
 
 			// We also want to make sure that the address is decoded
 			// correctly from the encoded TLV stream.
-			decoded, err := NewFromRawBytes(
+			decoded, err := tappsbt.NewFromRawBytes(
 				strings.NewReader(validCase.Expected), true,
 			)
 			require.NoError(tt, err)
@@ -199,7 +204,7 @@ func runBIPTestVector(t *testing.T, testVectors *TestVectors) {
 				validCase.Expected,
 			)
 			require.NoError(tt, err)
-			decodedFromBytes, err := NewFromRawBytes(
+			decodedFromBytes, err := tappsbt.NewFromRawBytes(
 				bytes.NewReader(rawBytes), false,
 			)
 			require.NoError(tt, err)
