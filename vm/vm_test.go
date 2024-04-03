@@ -12,6 +12,9 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	commitmentmock "github.com/lightninglabs/taproot-assets/internal/mock/commitment"
+	vmmock "github.com/lightninglabs/taproot-assets/internal/mock/vm"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/tapscript"
 	"github.com/stretchr/testify/require"
@@ -47,12 +50,12 @@ func randAsset(t *testing.T, assetType asset.Type,
 
 	t.Helper()
 
-	genesis := asset.RandGenesis(t, assetType)
+	genesis := assetmock.RandGenesis(t, assetType)
 	scriptKey := asset.NewScriptKey(scriptKeyPub)
-	protoAsset := asset.RandAssetWithValues(t, genesis, nil, scriptKey)
-	groupKey := asset.RandGroupKey(t, genesis, protoAsset)
+	protoAsset := assetmock.RandAssetWithValues(t, genesis, nil, scriptKey)
+	groupKey := assetmock.RandGroupKey(t, genesis, protoAsset)
 
-	return asset.NewAssetNoErr(
+	return assetmock.NewAssetNoErr(
 		t, genesis, protoAsset.Amount, protoAsset.LockTime,
 		protoAsset.RelativeLockTime, scriptKey, groupKey,
 		asset.WithAssetVersion(protoAsset.Version),
@@ -124,11 +127,11 @@ func genesisStateTransition(assetType asset.Type,
 		var (
 			inputSet commitment.InputSet
 			splitSet commitment.SplitSet
-			a        = asset.RandAsset(t, assetType)
+			a        = assetmock.RandAsset(t, assetType)
 		)
 
 		if !grouped {
-			a = asset.NewAssetNoErr(
+			a = assetmock.NewAssetNoErr(
 				t, a.Genesis, a.Amount, a.LockTime,
 				a.RelativeLockTime, a.ScriptKey, nil,
 				asset.WithAssetVersion(a.Version),
@@ -157,7 +160,7 @@ func invalidGenesisStateTransitionWitness(assetType asset.Type,
 	return func(t *testing.T) (*asset.Asset, commitment.SplitSet,
 		commitment.InputSet) {
 
-		a := asset.RandAsset(t, assetType)
+		a := assetmock.RandAsset(t, assetType)
 		if grouped {
 			a.PrevWitnesses[0].TxWitness = nil
 
@@ -299,12 +302,12 @@ func splitStateTransition(t *testing.T) (*asset.Asset, commitment.SplitSet,
 	externalLocators := []*commitment.SplitLocator{{
 		OutputIndex: 1,
 		AssetID:     assetID,
-		ScriptKey:   asset.RandSerializedKey(t),
+		ScriptKey:   assetmock.RandSerializedKey(t),
 		Amount:      1,
 	}, {
 		OutputIndex: 2,
 		AssetID:     assetID,
-		ScriptKey:   asset.RandSerializedKey(t),
+		ScriptKey:   assetmock.RandSerializedKey(t),
 		Amount:      1,
 	}}
 	inputs := []commitment.SplitCommitmentInput{{
@@ -354,7 +357,7 @@ func splitFullValueStateTransition(validRootLocator,
 		externalLocators := []*commitment.SplitLocator{{
 			OutputIndex: 1,
 			AssetID:     assetID,
-			ScriptKey:   asset.RandSerializedKey(t),
+			ScriptKey:   assetmock.RandSerializedKey(t),
 			Amount:      3,
 		}}
 		inputs := []commitment.SplitCommitmentInput{{
@@ -412,7 +415,7 @@ func splitCollectibleStateTransition(validRoot bool) stateTransitionFunc {
 		externalLocators := []*commitment.SplitLocator{{
 			OutputIndex: 1,
 			AssetID:     assetID,
-			ScriptKey:   asset.RandSerializedKey(t),
+			ScriptKey:   assetmock.RandSerializedKey(t),
 			Amount:      genesisAsset.Amount,
 		}}
 		inputs := []commitment.SplitCommitmentInput{{
@@ -450,8 +453,8 @@ func groupAnchorStateTransition(useHashLock, BIP86, keySpend, valid bool,
 	return func(t *testing.T) (*asset.Asset, commitment.SplitSet,
 		commitment.InputSet) {
 
-		gen := asset.RandGenesis(t, assetType)
-		return asset.AssetCustomGroupKey(
+		gen := assetmock.RandGenesis(t, assetType)
+		return assetmock.AssetCustomGroupKey(
 			t, useHashLock, BIP86, keySpend, valid, gen,
 		), nil, nil
 	}
@@ -481,12 +484,12 @@ func scriptTreeSpendStateTransition(t *testing.T, useHashLock,
 	externalLocators := []*commitment.SplitLocator{{
 		OutputIndex: 1,
 		AssetID:     assetID,
-		ScriptKey:   asset.RandSerializedKey(t),
+		ScriptKey:   assetmock.RandSerializedKey(t),
 		Amount:      1,
 	}, {
 		OutputIndex: 2,
 		AssetID:     assetID,
-		ScriptKey:   asset.RandSerializedKey(t),
+		ScriptKey:   assetmock.RandSerializedKey(t),
 		Amount:      1,
 	}}
 
@@ -531,7 +534,7 @@ func scriptTreeSpendStateTransition(t *testing.T, useHashLock,
 			externalLocators := []*commitment.SplitLocator{{
 				OutputIndex: 1,
 				AssetID:     assetID,
-				ScriptKey:   asset.RandSerializedKey(t),
+				ScriptKey:   assetmock.RandSerializedKey(t),
 				Amount:      1,
 			}}
 
@@ -770,8 +773,8 @@ func TestVM(t *testing.T) {
 	}
 
 	var (
-		validVectors = &TestVectors{}
-		errorVectors = &TestVectors{}
+		validVectors = &vmmock.TestVectors{}
+		errorVectors = &vmmock.TestVectors{}
 	)
 	for _, testCase := range testCases {
 		testCase := testCase
@@ -779,12 +782,12 @@ func TestVM(t *testing.T) {
 		success := t.Run(testCase.name, func(t *testing.T) {
 			newAsset, splitSet, inputSet := testCase.f(t)
 
-			tv := &ValidTestCase{
-				Asset: asset.NewTestFromAsset(t, newAsset),
-				SplitSet: commitment.NewTestFromSplitSet(
+			tv := &vmmock.ValidTestCase{
+				Asset: assetmock.NewTestFromAsset(t, newAsset),
+				SplitSet: commitmentmock.NewTestFromSplitSet(
 					t, splitSet,
 				),
-				InputSet: commitment.NewTestFromInputSet(
+				InputSet: commitmentmock.NewTestFromInputSet(
 					t, inputSet,
 				),
 				Comment: testCase.name,
@@ -796,7 +799,7 @@ func TestVM(t *testing.T) {
 			} else {
 				errorVectors.ErrorTestCases = append(
 					errorVectors.ErrorTestCases,
-					&ErrorTestCase{
+					&vmmock.ErrorTestCase{
 						Asset:    tv.Asset,
 						SplitSet: tv.SplitSet,
 						InputSet: tv.InputSet,
@@ -880,7 +883,7 @@ func TestBIPTestVectors(t *testing.T) {
 	for idx := range allTestVectorFiles {
 		var (
 			fileName    = allTestVectorFiles[idx]
-			testVectors = &TestVectors{}
+			testVectors = &vmmock.TestVectors{}
 		)
 		test.ParseTestVectors(t, fileName, &testVectors)
 		t.Run(fileName, func(tt *testing.T) {
@@ -892,7 +895,7 @@ func TestBIPTestVectors(t *testing.T) {
 }
 
 // runBIPTestVector runs the tests in a single BIP test vector file.
-func runBIPTestVector(t *testing.T, testVectors *TestVectors) {
+func runBIPTestVector(t *testing.T, testVectors *vmmock.TestVectors) {
 	for _, validCase := range testVectors.ValidTestCases {
 		validCase := validCase
 

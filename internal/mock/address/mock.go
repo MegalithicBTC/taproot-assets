@@ -8,8 +8,11 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	commitmentmock "github.com/lightninglabs/taproot-assets/internal/mock/commitment"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -28,8 +31,8 @@ func RandProofCourierAddr(t testing.TB) url.URL {
 }
 
 // RandAddr creates a random address for testing.
-func RandAddr(t testing.TB, params *ChainParams,
-	proofCourierAddr url.URL) (*AddrWithKeyInfo,
+func RandAddr(t testing.TB, params *address.ChainParams,
+	proofCourierAddr url.URL) (*address.AddrWithKeyInfo,
 	*asset.Genesis, *asset.GroupKey) {
 
 	scriptKeyPriv := test.RandPrivKey(t)
@@ -43,7 +46,7 @@ func RandAddr(t testing.TB, params *ChainParams,
 
 	internalKey := test.RandPrivKey(t)
 
-	genesis := asset.RandGenesis(t, asset.Type(test.RandInt31n(2)))
+	genesis := assetmock.RandGenesis(t, asset.Type(test.RandInt31n(2)))
 	amount := test.RandInt[uint64]()
 	if genesis.Type == asset.Collectible {
 		amount = 1
@@ -62,11 +65,11 @@ func RandAddr(t testing.TB, params *ChainParams,
 	}
 
 	if test.RandInt[uint32]()%2 == 0 {
-		protoAsset := asset.NewAssetNoErr(
+		protoAsset := assetmock.NewAssetNoErr(
 			t, genesis, amount, 0, 0, scriptKey, nil,
 			asset.WithAssetVersion(assetVersion),
 		)
-		groupInfo = asset.RandGroupKey(t, genesis, protoAsset)
+		groupInfo = assetmock.RandGroupKey(t, genesis, protoAsset)
 		groupPubKey = &groupInfo.GroupPubKey
 		groupWitness = groupInfo.Witness
 
@@ -77,17 +80,18 @@ func RandAddr(t testing.TB, params *ChainParams,
 		require.NoError(t, err)
 	}
 
-	tapAddr, err := New(
-		V0, genesis, groupPubKey, groupWitness, *scriptKey.PubKey,
-		*internalKey.PubKey(), amount, tapscriptSibling, params,
-		proofCourierAddr, WithAssetVersion(assetVersion),
+	tapAddr, err := address.New(
+		address.V0, genesis, groupPubKey, groupWitness,
+		*scriptKey.PubKey, *internalKey.PubKey(), amount,
+		tapscriptSibling, params, proofCourierAddr,
+		address.WithAssetVersion(assetVersion),
 	)
 	require.NoError(t, err)
 
 	taprootOutputKey, err := tapAddr.TaprootOutputKey()
 	require.NoError(t, err)
 
-	return &AddrWithKeyInfo{
+	return &address.AddrWithKeyInfo{
 		Tap:            tapAddr,
 		ScriptKeyTweak: *scriptKey.TweakedScriptKey,
 		InternalKeyDesc: keychain.KeyDescriptor{
@@ -119,7 +123,7 @@ type TestVectors struct {
 	ErrorTestCases []*ErrorTestCase `json:"error_test_cases"`
 }
 
-func NewTestFromAddress(t testing.TB, a *Tap) *TestAddress {
+func NewTestFromAddress(t testing.TB, a *address.Tap) *TestAddress {
 	t.Helper()
 
 	ta := &TestAddress{
@@ -138,7 +142,7 @@ func NewTestFromAddress(t testing.TB, a *Tap) *TestAddress {
 	}
 
 	if a.TapscriptSibling != nil {
-		ta.TapscriptSibling = commitment.HexTapscriptSibling(
+		ta.TapscriptSibling = commitmentmock.HexTapscriptSibling(
 			t, a.TapscriptSibling,
 		)
 	}
@@ -159,7 +163,7 @@ type TestAddress struct {
 	ProofCourierAddr string `json:"proof_courier_addr"`
 }
 
-func (ta *TestAddress) ToAddress(t testing.TB) *Tap {
+func (ta *TestAddress) ToAddress(t testing.TB) *address.Tap {
 	t.Helper()
 
 	// Validate minimum fields are set. We use panic, so we can actually
@@ -167,7 +171,7 @@ func (ta *TestAddress) ToAddress(t testing.TB) *Tap {
 	if ta.ChainParamsHRP == "" {
 		panic("missing chain params HRP")
 	}
-	if !IsBech32MTapPrefix(ta.ChainParamsHRP + "1") {
+	if !address.IsBech32MTapPrefix(ta.ChainParamsHRP + "1") {
 		panic("invalid chain params HRP")
 	}
 
@@ -195,7 +199,7 @@ func (ta *TestAddress) ToAddress(t testing.TB) *Tap {
 		}
 	}
 
-	chainParams, err := Net(ta.ChainParamsHRP)
+	chainParams, err := address.Net(ta.ChainParamsHRP)
 	if err != nil {
 		panic(err)
 	}
@@ -205,8 +209,8 @@ func (ta *TestAddress) ToAddress(t testing.TB) *Tap {
 		panic(err)
 	}
 
-	a := &Tap{
-		Version:          Version(ta.Version),
+	a := &address.Tap{
+		Version:          address.Version(ta.Version),
 		ChainParams:      chainParams,
 		AssetVersion:     asset.Version(ta.AssetVersion),
 		AssetID:          test.Parse32Byte(t, ta.AssetID),
@@ -221,7 +225,7 @@ func (ta *TestAddress) ToAddress(t testing.TB) *Tap {
 	}
 
 	if ta.TapscriptSibling != "" {
-		a.TapscriptSibling = commitment.ParseTapscriptSibling(
+		a.TapscriptSibling = commitmentmock.ParseTapscriptSibling(
 			t, ta.TapscriptSibling,
 		)
 	}

@@ -17,8 +17,11 @@ import (
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	commitmentmock "github.com/lightninglabs/taproot-assets/internal/mock/commitment"
+	proofmock "github.com/lightninglabs/taproot-assets/internal/mock/proof"
 	"github.com/lightninglabs/taproot-assets/internal/test"
-	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +41,7 @@ var (
 )
 
 // RandPacket generates a random virtual packet for testing purposes.
-func RandPacket(t testing.TB) *VPacket {
+func RandPacket(t testing.TB) *tappsbt.VPacket {
 	testPubKey := test.RandPubKey(t)
 	op := test.RandOp(t)
 	keyDesc := keychain.KeyDescriptor{
@@ -58,15 +61,15 @@ func RandPacket(t testing.TB) *VPacket {
 		keyDesc.PubKey, inputScriptKey.Tweak,
 	)
 
-	bip32Derivation, trBip32Derivation := Bip32DerivationFromKeyDesc(
+	bip32Derivation, trBip32Derivation := tappsbt.Bip32DerivationFromKeyDesc(
 		keyDesc, testParams.HDCoinType,
 	)
 	bip32Derivations := []*psbt.Bip32Derivation{bip32Derivation}
 	trBip32Derivations := []*psbt.TaprootBip32Derivation{trBip32Derivation}
-	testAsset := asset.RandAsset(t, asset.Normal)
+	testAsset := assetmock.RandAsset(t, asset.Normal)
 	testAsset.ScriptKey = inputScriptKey
 
-	testOutputAsset := asset.RandAsset(t, asset.Normal)
+	testOutputAsset := assetmock.RandAsset(t, asset.Normal)
 	testOutputAsset.ScriptKey = asset.NewScriptKeyBip86(keyDesc)
 
 	// The raw key won't be serialized within the asset, so let's blank it
@@ -98,21 +101,21 @@ func RandPacket(t testing.TB) *VPacket {
 	err = oddTxBlock.Deserialize(bytes.NewReader(oddTxBlockBytes))
 	require.NoError(t, err)
 
-	inputProof := proof.RandProof(
+	inputProof := proofmock.RandProof(
 		t, testAsset.Genesis, inputScriptKey.PubKey, oddTxBlock, 1, 0,
 	)
 
 	courierAddress, err := url.Parse("https://example.com")
 	require.NoError(t, err)
 
-	vPacket := &VPacket{
-		Inputs: []*VInput{{
+	vPacket := &tappsbt.VPacket{
+		Inputs: []*tappsbt.VInput{{
 			PrevID: asset.PrevID{
 				OutPoint:  op,
-				ID:        asset.RandID(t),
-				ScriptKey: asset.RandSerializedKey(t),
+				ID:        assetmock.RandID(t),
+				ScriptKey: assetmock.RandSerializedKey(t),
 			},
-			Anchor: Anchor{
+			Anchor: tappsbt.Anchor{
 				Value:             777,
 				PkScript:          []byte("anchor pkscript"),
 				SigHashType:       txscript.SigHashSingle,
@@ -126,12 +129,12 @@ func RandPacket(t testing.TB) *VPacket {
 		}, {
 			// Empty input.
 		}},
-		Outputs: []*VOutput{{
+		Outputs: []*tappsbt.VOutput{{
 			Amount: 123,
 			AssetVersion: asset.Version(
 				test.RandIntn(2),
 			),
-			Type:                               TypeSplitRoot,
+			Type:                               tappsbt.TypeSplitRoot,
 			Interactive:                        true,
 			AnchorOutputIndex:                  0,
 			AnchorOutputInternalKey:            testPubKey,
@@ -148,7 +151,7 @@ func RandPacket(t testing.TB) *VPacket {
 			AssetVersion: asset.Version(
 				test.RandIntn(2),
 			),
-			Type:                               TypeSplitRoot,
+			Type:                               tappsbt.TypeSplitRoot,
 			Interactive:                        false,
 			AnchorOutputIndex:                  1,
 			AnchorOutputInternalKey:            testPubKey,
@@ -182,7 +185,7 @@ type TestVectors struct {
 	ErrorTestCases []*ErrorTestCase `json:"error_test_cases"`
 }
 
-func NewTestFromVPacket(t testing.TB, p *VPacket) *TestVPacket {
+func NewTestFromVPacket(t testing.TB, p *tappsbt.VPacket) *TestVPacket {
 	tp := &TestVPacket{
 		Version:        p.Version,
 		ChainParamsHRP: p.ChainParams.TapHRP,
@@ -210,7 +213,7 @@ type TestVPacket struct {
 	ChainParamsHRP string         `json:"chain_params_hrp"`
 }
 
-func (tp *TestVPacket) ToVPacket(t testing.TB) *VPacket {
+func (tp *TestVPacket) ToVPacket(t testing.TB) *tappsbt.VPacket {
 	t.Helper()
 
 	// Validate minimum fields are set. We use panic, so we can actually
@@ -227,13 +230,24 @@ func (tp *TestVPacket) ToVPacket(t testing.TB) *VPacket {
 		panic(err)
 	}
 
-	p := &VPacket{
+	p := &tappsbt.VPacket{
 		Version:     tp.Version,
 		ChainParams: chainParams,
 	}
 
 	for idx := range tp.Inputs {
-		p.Inputs = append(p.Inputs, tp.Inputs[idx].ToVInput(t))
+		ti := tp.Inputs[idx].ToVInput(t)
+		p.Inputs = append(p.Inputs, ti)
+
+		if tp.Inputs[idx].Asset != nil {
+			p.SetInputAsset(idx, tp.Inputs[idx].Asset.ToAsset(t))
+
+			// The script key derivation information is not
+			// contained in the asset TLV itself, we need to fetch
+			// that from the other fields.
+			err := p.Inputs[idx].DeserializeScriptKey()
+			require.NoError(t, err)
+		}
 	}
 
 	for idx := range tp.Outputs {
@@ -243,13 +257,13 @@ func (tp *TestVPacket) ToVPacket(t testing.TB) *VPacket {
 	return p
 }
 
-func NewTestFromVInput(t testing.TB, i *VInput) *TestVInput {
+func NewTestFromVInput(t testing.TB, i *tappsbt.VInput) *TestVInput {
 	t.Helper()
 
 	ti := &TestVInput{
 		TrInternalKey: hex.EncodeToString(i.TaprootInternalKey),
 		TrMerkleRoot:  hex.EncodeToString(i.TaprootMerkleRoot),
-		PrevID:        asset.NewTestFromPrevID(&i.PrevID),
+		PrevID:        assetmock.NewTestFromPrevID(&i.PrevID),
 		Anchor:        NewTestFromAnchor(&i.Anchor),
 	}
 
@@ -269,12 +283,12 @@ func NewTestFromVInput(t testing.TB, i *VInput) *TestVInput {
 		)
 	}
 
-	if i.asset != nil {
-		ti.Asset = asset.NewTestFromAsset(t, i.asset)
+	if i.Asset() != nil {
+		ti.Asset = assetmock.NewTestFromAsset(t, i.Asset())
 	}
 
 	if i.Proof != nil {
-		ti.Proof = proof.NewTestFromProof(t, i.Proof)
+		ti.Proof = proofmock.NewTestFromProof(t, i.Proof)
 	}
 
 	return ti
@@ -285,16 +299,16 @@ type TestVInput struct {
 	TrBip32Derivation []*TestTrBip32Derivation `json:"tr_bip32_derivation"`
 	TrInternalKey     string                   `json:"tr_internal_key"`
 	TrMerkleRoot      string                   `json:"tr_merkle_root"`
-	PrevID            *asset.TestPrevID        `json:"prev_id"`
+	PrevID            *assetmock.TestPrevID    `json:"prev_id"`
 	Anchor            *TestAnchor              `json:"anchor"`
-	Asset             *asset.TestAsset         `json:"asset"`
-	Proof             *proof.TestProof         `json:"proof"`
+	Asset             *assetmock.TestAsset     `json:"asset"`
+	Proof             *proofmock.TestProof     `json:"proof"`
 }
 
-func (ti *TestVInput) ToVInput(t testing.TB) *VInput {
+func (ti *TestVInput) ToVInput(t testing.TB) *tappsbt.VInput {
 	t.Helper()
 
-	vi := &VInput{
+	vi := &tappsbt.VInput{
 		PInput: psbt.PInput{
 			TaprootInternalKey: test.ParseHex(t, ti.TrInternalKey),
 			TaprootMerkleRoot:  test.ParseHex(t, ti.TrMerkleRoot),
@@ -317,16 +331,6 @@ func (ti *TestVInput) ToVInput(t testing.TB) *VInput {
 		)
 	}
 
-	if ti.Asset != nil {
-		vi.asset = ti.Asset.ToAsset(t)
-
-		// The script key derivation information is not contained in the
-		// asset TLV itself, we need to fetch that from the other
-		// fields.
-		err := vi.deserializeScriptKey()
-		require.NoError(t, err)
-	}
-
 	if ti.Proof != nil {
 		vi.Proof = ti.Proof.ToProof(t)
 	}
@@ -334,7 +338,7 @@ func (ti *TestVInput) ToVInput(t testing.TB) *VInput {
 	return vi
 }
 
-func NewTestFromAnchor(a *Anchor) *TestAnchor {
+func NewTestFromAnchor(a *tappsbt.Anchor) *TestAnchor {
 	ta := &TestAnchor{
 		Value:            int64(a.Value),
 		PkScript:         hex.EncodeToString(a.PkScript),
@@ -374,10 +378,10 @@ type TestAnchor struct {
 	TrBip32Derivation []*TestTrBip32Derivation `json:"tr_bip32_derivation"`
 }
 
-func (ta *TestAnchor) ToAnchor(t testing.TB) *Anchor {
+func (ta *TestAnchor) ToAnchor(t testing.TB) *tappsbt.Anchor {
 	t.Helper()
 
-	a := &Anchor{
+	a := &tappsbt.Anchor{
 		Value:            btcutil.Amount(ta.Value),
 		PkScript:         test.ParseHex(t, ta.PkScript),
 		SigHashType:      txscript.SigHashType(ta.SigHashType),
@@ -476,7 +480,7 @@ func (td *TestTrBip32Derivation) ToTrBip32Derivation(
 	return d
 }
 
-func NewTestFromVOutput(t testing.TB, v *VOutput,
+func NewTestFromVOutput(t testing.TB, v *tappsbt.VOutput,
 	coinType uint32) *TestVOutput {
 
 	vo := &TestVOutput{
@@ -488,7 +492,7 @@ func NewTestFromVOutput(t testing.TB, v *VOutput,
 		AnchorOutputInternalKey: test.HexPubKey(
 			v.AnchorOutputInternalKey,
 		),
-		AnchorOutputTapscriptSibling: commitment.HexTapscriptSibling(
+		AnchorOutputTapscriptSibling: commitmentmock.HexTapscriptSibling(
 			t, v.AnchorOutputTapscriptSibling,
 		),
 		PkScript: hex.EncodeToString(test.ComputeTaprootScript(
@@ -497,7 +501,7 @@ func NewTestFromVOutput(t testing.TB, v *VOutput,
 	}
 
 	if v.Asset != nil {
-		vo.Asset = asset.NewTestFromAsset(t, v.Asset)
+		vo.Asset = assetmock.NewTestFromAsset(t, v.Asset)
 	}
 
 	if v.ProofDeliveryAddress != nil {
@@ -505,11 +509,11 @@ func NewTestFromVOutput(t testing.TB, v *VOutput,
 	}
 
 	if v.ProofSuffix != nil {
-		vo.ProofSuffix = proof.NewTestFromProof(t, v.ProofSuffix)
+		vo.ProofSuffix = proofmock.NewTestFromProof(t, v.ProofSuffix)
 	}
 
 	if v.ScriptKey.TweakedScriptKey != nil {
-		bip32Derivation, trBip32Derivation := Bip32DerivationFromKeyDesc(
+		bip32Derivation, trBip32Derivation := tappsbt.Bip32DerivationFromKeyDesc(
 			v.ScriptKey.RawKey, coinType,
 		)
 		vo.Bip32Derivation = append(
@@ -564,7 +568,7 @@ func NewTestFromVOutput(t testing.TB, v *VOutput,
 	}
 
 	if v.SplitAsset != nil {
-		vo.SplitAsset = asset.NewTestFromAsset(t, v.SplitAsset)
+		vo.SplitAsset = assetmock.NewTestFromAsset(t, v.SplitAsset)
 	}
 
 	return vo
@@ -580,18 +584,18 @@ type TestVOutput struct {
 	AnchorOutputBip32Derivation   []*TestBip32Derivation   `json:"anchor_output_bip32_derivation"`
 	AnchorOutputTrBip32Derivation []*TestTrBip32Derivation `json:"anchor_output_tr_bip32_derivation"`
 	AnchorOutputTapscriptSibling  string                   `json:"anchor_output_tapscript_sibling"`
-	Asset                         *asset.TestAsset         `json:"asset"`
-	SplitAsset                    *asset.TestAsset         `json:"split_asset"`
+	Asset                         *assetmock.TestAsset     `json:"asset"`
+	SplitAsset                    *assetmock.TestAsset     `json:"split_asset"`
 	PkScript                      string                   `json:"pk_script"`
 	Bip32Derivation               []*TestBip32Derivation   `json:"bip32_derivation"`
 	TrBip32Derivation             []*TestTrBip32Derivation `json:"tr_bip32_derivation"`
 	TrInternalKey                 string                   `json:"tr_internal_key"`
 	TrMerkleRoot                  string                   `json:"tr_merkle_root"`
 	ProofDeliveryAddress          string                   `json:"proof_delivery_address"`
-	ProofSuffix                   *proof.TestProof         `json:"proof_suffix"`
+	ProofSuffix                   *proofmock.TestProof     `json:"proof_suffix"`
 }
 
-func (to *TestVOutput) ToVOutput(t testing.TB) *VOutput {
+func (to *TestVOutput) ToVOutput(t testing.TB) *tappsbt.VOutput {
 	t.Helper()
 
 	if to.PkScript == "" {
@@ -601,16 +605,16 @@ func (to *TestVOutput) ToVOutput(t testing.TB) *VOutput {
 		panic("invalid output pk script length")
 	}
 
-	v := &VOutput{
+	v := &tappsbt.VOutput{
 		Amount:            to.Amount,
-		Type:              VOutputType(to.Type),
+		Type:              tappsbt.VOutputType(to.Type),
 		Interactive:       to.Interactive,
 		AssetVersion:      asset.Version(to.AssetVersion),
 		AnchorOutputIndex: to.AnchorOutputIndex,
 		AnchorOutputInternalKey: test.ParsePubKey(
 			t, to.AnchorOutputInternalKey,
 		),
-		AnchorOutputTapscriptSibling: commitment.ParseTapscriptSibling(
+		AnchorOutputTapscriptSibling: commitmentmock.ParseTapscriptSibling(
 			t, to.AnchorOutputTapscriptSibling,
 		),
 		ScriptKey: asset.ScriptKey{
@@ -638,7 +642,7 @@ func (to *TestVOutput) ToVOutput(t testing.TB) *VOutput {
 
 	if len(to.Bip32Derivation) > 0 && to.TrInternalKey != "" {
 		firstDerivation := to.Bip32Derivation[0].ToBip32Derivation(t)
-		keyDesc, err := KeyDescFromBip32Derivation(firstDerivation)
+		keyDesc, err := tappsbt.KeyDescFromBip32Derivation(firstDerivation)
 		require.NoError(t, err)
 
 		v.ScriptKey.TweakedScriptKey = &asset.TweakedScriptKey{

@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/asset"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/stretchr/testify/require"
 )
@@ -70,7 +71,7 @@ func TestDeriveBurnKey(t *testing.T) {
 			"36072361b52ad426c",
 	}}
 
-	testVectors := &asset.BurnTestVectors{}
+	testVectors := &assetmock.BurnTestVectors{}
 	for _, tc := range testCases {
 		tc := tc
 
@@ -84,8 +85,8 @@ func TestDeriveBurnKey(t *testing.T) {
 
 			testVectors.ValidTestCases = append(
 				testVectors.ValidTestCases,
-				&asset.ValidBurnTestCase{
-					PrevID: asset.NewTestFromPrevID(
+				&assetmock.ValidBurnTestCase{
+					PrevID: assetmock.NewTestFromPrevID(
 						&tc.prevID,
 					),
 					Expected: burnKeyHex,
@@ -107,7 +108,7 @@ func TestBurnBIPTestVectors(t *testing.T) {
 	for idx := range allBurnTestVectorFiles {
 		var (
 			fileName    = allBurnTestVectorFiles[idx]
-			testVectors = &asset.BurnTestVectors{}
+			testVectors = &assetmock.BurnTestVectors{}
 		)
 		test.ParseTestVectors(t, fileName, &testVectors)
 		t.Run(fileName, func(tt *testing.T) {
@@ -120,7 +121,7 @@ func TestBurnBIPTestVectors(t *testing.T) {
 
 // runBurnBIPTestVector runs the tests in a single BIP test vector file.
 func runBurnBIPTestVector(t *testing.T,
-	testVectors *asset.BurnTestVectors) {
+	testVectors *assetmock.BurnTestVectors) {
 
 	for _, validCase := range testVectors.ValidTestCases {
 		validCase := validCase

@@ -23,6 +23,8 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	proofmock "github.com/lightninglabs/taproot-assets/internal/mock/proof"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/build"
@@ -150,9 +152,9 @@ func TestProofEncoding(t *testing.T) {
 	testBlocks := readTestData(t)
 	oddTxBlock := testBlocks[0]
 
-	genesis := asset.RandGenesis(t, asset.Collectible)
+	genesis := assetmock.RandGenesis(t, asset.Collectible)
 	scriptKey := test.RandPubKey(t)
-	proof1 := proof.RandProof(t, genesis, scriptKey, oddTxBlock, 0, 1)
+	proof1 := proofmock.RandProof(t, genesis, scriptKey, oddTxBlock, 0, 1)
 
 	file, err := proof.NewFile(proof.V0, proof1, proof1)
 	require.NoError(t, err)
@@ -245,7 +247,7 @@ func genRandomGenesisWithProof(t testing.TB, assetType asset.Type,
 
 	// If we have a specified meta reveal, then we'll replace the meta hash
 	// with the hash of the reveal instead.
-	assetGenesis := asset.RandGenesis(t, assetType)
+	assetGenesis := assetmock.RandGenesis(t, assetType)
 	assetGenesis.OutputIndex = 0
 	if metaReveal != nil {
 		assetGenesis.MetaHash = metaReveal.MetaHash()
@@ -262,12 +264,12 @@ func genRandomGenesisWithProof(t testing.TB, assetType asset.Type,
 		groupAmt = *amt
 	}
 
-	protoAsset := asset.NewAssetNoErr(
+	protoAsset := assetmock.NewAssetNoErr(
 		t, assetGenesis, groupAmt, 0, 0,
 		asset.NewScriptKeyBip86(genesisPubKey), nil,
 		asset.WithAssetVersion(assetVersion),
 	)
-	assetGroupKey := asset.RandGroupKey(t, assetGenesis, protoAsset)
+	assetGroupKey := assetmock.RandGroupKey(t, assetGenesis, protoAsset)
 	groupKeyReveal := &asset.GroupKeyReveal{
 		RawKey: asset.ToSerialized(
 			assetGroupKey.RawKey.PubKey,
@@ -567,7 +569,7 @@ func TestGenesisProofVerification(t *testing.T) {
 		},
 	}
 
-	testVectors := &proof.TestVectors{}
+	testVectors := &proofmock.TestVectors{}
 	for _, tc := range testCases {
 		tc := tc
 
@@ -581,9 +583,9 @@ func TestGenesisProofVerification(t *testing.T) {
 			)
 			_, err := genesisProof.Verify(
 				context.Background(), nil,
-				proof.MockHeaderVerifier,
-				proof.MockMerkleVerifier,
-				proof.MockGroupVerifier,
+				proofmock.MockHeaderVerifier,
+				proofmock.MockMerkleVerifier,
+				proofmock.MockGroupVerifier,
 			)
 			require.ErrorIs(t, err, tc.expectedErr)
 
@@ -594,8 +596,8 @@ func TestGenesisProofVerification(t *testing.T) {
 			if tc.expectedErr == nil {
 				testVectors.ValidTestCases = append(
 					testVectors.ValidTestCases,
-					&proof.ValidTestCase{
-						Proof: proof.NewTestFromProof(
+					&proofmock.ValidTestCase{
+						Proof: proofmock.NewTestFromProof(
 							t, &genesisProof,
 						),
 						Expected: hex.EncodeToString(
@@ -645,7 +647,7 @@ func TestProofBlockHeaderVerification(t *testing.T) {
 	// therefore an error is not returned.
 	_, err := p.Verify(
 		context.Background(), nil, headerVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.NoError(t, err)
 
@@ -654,7 +656,7 @@ func TestProofBlockHeaderVerification(t *testing.T) {
 	p.BlockHeader.Nonce += 1
 	_, actualErr := p.Verify(
 		context.Background(), nil, headerVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.ErrorIs(t, actualErr, errHeaderVerifier)
 
@@ -666,7 +668,7 @@ func TestProofBlockHeaderVerification(t *testing.T) {
 	p.BlockHeight += 1
 	_, actualErr = p.Verify(
 		context.Background(), nil, headerVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.ErrorIs(t, actualErr, errHeaderVerifier)
 }
@@ -687,8 +689,8 @@ func TestProofFileVerification(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = f.Verify(
-		context.Background(), proof.MockHeaderVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		context.Background(), proofmock.MockHeaderVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.NoError(t, err)
 
@@ -696,8 +698,8 @@ func TestProofFileVerification(t *testing.T) {
 	f.Version = proof.Version(212)
 
 	lastAsset, err := f.Verify(
-		context.Background(), proof.MockHeaderVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		context.Background(), proofmock.MockHeaderVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.Nil(t, lastAsset)
 	require.ErrorIs(t, err, proof.ErrUnknownVersion)
@@ -739,7 +741,7 @@ func TestProofVerification(t *testing.T) {
 	require.NoError(t, p.Asset.Encode(&buf))
 	t.Logf("Proof asset encoded: %x", buf.Bytes())
 
-	ta := asset.NewTestFromAsset(t, &p.Asset)
+	ta := assetmock.NewTestFromAsset(t, &p.Asset)
 	assetJSON, err := json.Marshal(ta)
 	require.NoError(t, err)
 
@@ -749,8 +751,8 @@ func TestProofVerification(t *testing.T) {
 	p.Version = proof.TransitionVersion(212)
 
 	lastAsset, err := p.Verify(
-		context.Background(), nil, proof.MockHeaderVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		context.Background(), nil, proofmock.MockHeaderVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.Nil(t, lastAsset)
 	require.ErrorIs(t, err, proof.ErrUnknownVersion)
@@ -772,8 +774,8 @@ func TestOwnershipProofVerification(t *testing.T) {
 	require.NoError(t, err)
 
 	snapshot, err := p.Verify(
-		context.Background(), nil, proof.MockHeaderVerifier,
-		proof.MockMerkleVerifier, proof.MockGroupVerifier,
+		context.Background(), nil, proofmock.MockHeaderVerifier,
+		proofmock.MockMerkleVerifier, proofmock.MockGroupVerifier,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, snapshot)
@@ -915,7 +917,7 @@ func TestBIPTestVectors(t *testing.T) {
 	for idx := range allTestVectorFiles {
 		var (
 			fileName    = allTestVectorFiles[idx]
-			testVectors = &proof.TestVectors{}
+			testVectors = &proofmock.TestVectors{}
 		)
 		test.ParseTestVectors(t, fileName, &testVectors)
 		t.Run(fileName, func(tt *testing.T) {
@@ -927,7 +929,7 @@ func TestBIPTestVectors(t *testing.T) {
 }
 
 // runBIPTestVector runs the tests in a single BIP test vector file.
-func runBIPTestVector(t *testing.T, testVectors *proof.TestVectors) {
+func runBIPTestVector(t *testing.T, testVectors *proofmock.TestVectors) {
 	for _, validCase := range testVectors.ValidTestCases {
 		validCase := validCase
 

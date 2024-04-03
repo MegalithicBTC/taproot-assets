@@ -13,6 +13,8 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/taproot-assets/asset"
+	mssmtmock "github.com/lightninglabs/taproot-assets/internal/mock/mssmt"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/lightningnetwork/lnd/input"
@@ -21,13 +23,13 @@ import (
 )
 
 // RandGenesis creates a random genesis for testing.
-func RandGenesis(t testing.TB, assetType Type) Genesis {
+func RandGenesis(t testing.TB, assetType asset.Type) asset.Genesis {
 	t.Helper()
 
 	var metaHash [32]byte
 	test.RandRead(t, metaHash[:])
 
-	return Genesis{
+	return asset.Genesis{
 		FirstPrevOut: test.RandOp(t),
 		Tag:          hex.EncodeToString(metaHash[:]),
 		MetaHash:     metaHash,
@@ -37,27 +39,29 @@ func RandGenesis(t testing.TB, assetType Type) Genesis {
 }
 
 // RandGroupKey creates a random group key for testing.
-func RandGroupKey(t testing.TB, genesis Genesis, newAsset *Asset) *GroupKey {
+func RandGroupKey(t testing.TB, genesis asset.Genesis,
+	newAsset *asset.Asset) *asset.GroupKey {
+
 	groupKey, _ := RandGroupKeyWithSigner(t, genesis, newAsset)
 	return groupKey
 }
 
 // RandGroupKeyWithSigner creates a random group key for testing, and provides
 // the signer for reissuing assets into the same group.
-func RandGroupKeyWithSigner(t testing.TB, genesis Genesis,
-	newAsset *Asset) (*GroupKey, []byte) {
+func RandGroupKeyWithSigner(t testing.TB, genesis asset.Genesis,
+	newAsset *asset.Asset) (*asset.GroupKey, []byte) {
 
 	privateKey := test.RandPrivKey(t)
 
 	genSigner := NewMockGenesisSigner(privateKey)
 	genBuilder := MockGroupTxBuilder{}
-	groupReq := GroupKeyRequest{
+	groupReq := asset.GroupKeyRequest{
 		RawKey:    test.PubToKeyDesc(privateKey.PubKey()),
 		AnchorGen: genesis,
 		NewAsset:  newAsset,
 	}
 
-	groupKey, err := DeriveGroupKey(genSigner, &genBuilder, groupReq)
+	groupKey, err := asset.DeriveGroupKey(genSigner, &genBuilder, groupReq)
 	require.NoError(t, err)
 
 	return groupKey, privateKey.Serialize()
@@ -99,11 +103,11 @@ func (r *MockGenesisSigner) SignVirtualTx(signDesc *lndclient.SignDescriptor,
 
 // A compile-time assertion to ensure MockGenesisSigner meets the
 // GenesisSigner interface.
-var _ GenesisSigner = (*MockGenesisSigner)(nil)
+var _ asset.GenesisSigner = (*MockGenesisSigner)(nil)
 
 // Forked from tapscript/tx/virtualTxOut to remove checks for split commitments
 // and witness stripping.
-func virtualGenesisTxOut(newAsset *Asset) (*wire.TxOut, error) {
+func virtualGenesisTxOut(newAsset *asset.Asset) (*wire.TxOut, error) {
 	// Commit to the new asset directly. In this case, the output script is
 	// derived from the root of a MS-SMT containing the new asset.
 	groupKey := schnorr.SerializePubKey(&newAsset.GroupKey.GroupPubKey)
@@ -142,14 +146,14 @@ func virtualGenesisTxOut(newAsset *Asset) (*wire.TxOut, error) {
 
 // Forked from tapscript/tx/virtualTx to be used only with the
 // MockGroupTxBuilder.
-func virtualGenesisTx(newAsset *Asset) (*wire.MsgTx, error) {
+func virtualGenesisTx(newAsset *asset.Asset) (*wire.MsgTx, error) {
 	var (
 		txIn *wire.TxIn
 		err  error
 	)
 
 	// We'll start by mapping all inputs into a MS-SMT.
-	txIn, _, err = VirtualGenesisTxIn(newAsset)
+	txIn, _, err = asset.VirtualGenesisTxIn(newAsset)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +177,7 @@ type MockGroupTxBuilder struct{}
 // BuildGenesisTx constructs a virtual transaction and prevOut that represent
 // the genesis state transition for a grouped asset. This output is used to
 // create a group witness for the grouped asset.
-func (m *MockGroupTxBuilder) BuildGenesisTx(newAsset *Asset) (*wire.MsgTx,
+func (m *MockGroupTxBuilder) BuildGenesisTx(newAsset *asset.Asset) (*wire.MsgTx,
 	*wire.TxOut, error) {
 
 	// First, we check that the passed asset is a genesis grouped asset
@@ -183,7 +187,7 @@ func (m *MockGroupTxBuilder) BuildGenesisTx(newAsset *Asset) (*wire.MsgTx,
 			"asset")
 	}
 
-	prevOut, err := InputGenesisAssetPrevOut(*newAsset)
+	prevOut, err := asset.InputGenesisAssetPrevOut(*newAsset)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -194,7 +198,7 @@ func (m *MockGroupTxBuilder) BuildGenesisTx(newAsset *Asset) (*wire.MsgTx,
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot tweak group key: %w", err)
 	}
-	populatedVirtualTx := VirtualTxWithInput(
+	populatedVirtualTx := asset.VirtualTxWithInput(
 		virtualTx, newAsset, 0, nil,
 	)
 
@@ -203,7 +207,7 @@ func (m *MockGroupTxBuilder) BuildGenesisTx(newAsset *Asset) (*wire.MsgTx,
 
 // A compile time assertion to ensure that MockGroupTxBuilder meets the
 // GenesisTxBuilder interface.
-var _ GenesisTxBuilder = (*MockGroupTxBuilder)(nil)
+var _ asset.GenesisTxBuilder = (*MockGroupTxBuilder)(nil)
 
 // SignOutputRaw creates a signature for a single input.
 // Taken from lnd/lnwallet/btcwallet/signer:L344, SignOutputRaw
@@ -332,7 +336,7 @@ func SignVirtualTx(priv *btcec.PrivateKey, signDesc *lndclient.SignDescriptor,
 // the tweaked group key or a valid witness for a script in the committed
 // tapscript tree.
 func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
-	validScriptWitness bool, gen Genesis) *Asset {
+	validScriptWitness bool, gen asset.Genesis) *asset.Asset {
 
 	t.Helper()
 
@@ -344,7 +348,7 @@ func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
 	}
 
 	var (
-		groupKey *GroupKey
+		groupKey *asset.GroupKey
 		err      error
 	)
 
@@ -364,7 +368,7 @@ func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
 	)
 
 	// Populate the initial parameters for the group key request.
-	groupReq := GroupKeyRequest{
+	groupReq := asset.GroupKeyRequest{
 		RawKey:    test.PubToKeyDesc(groupInternalKey),
 		AnchorGen: gen,
 		NewAsset:  protoAsset,
@@ -375,7 +379,7 @@ func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
 	switch {
 	// Use an empty tapscript and script witness.
 	case BIP86:
-		groupKey, err = DeriveCustomGroupKey(
+		groupKey, err = asset.DeriveCustomGroupKey(
 			genSigner, &genBuilder, groupReq, nil, nil,
 		)
 
@@ -388,7 +392,7 @@ func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
 		treeTapHash := treeRootChildren.TapHash()
 
 		groupReq.TapscriptRoot = treeTapHash[:]
-		groupKey, err = DeriveCustomGroupKey(
+		groupKey, err = asset.DeriveCustomGroupKey(
 			genSigner, &genBuilder, groupReq, nil, nil,
 		)
 
@@ -401,7 +405,7 @@ func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
 		)
 
 		groupReq.TapscriptRoot = tapRootHash
-		groupKey, err = DeriveCustomGroupKey(
+		groupKey, err = asset.DeriveCustomGroupKey(
 			genSigner, &genBuilder, groupReq, tapLeaf, witness,
 		)
 	}
@@ -411,43 +415,44 @@ func AssetCustomGroupKey(t *testing.T, useHashLock, BIP86, keySpend,
 	return NewAssetNoErr(
 		t, gen, protoAsset.Amount, protoAsset.LockTime,
 		protoAsset.RelativeLockTime, scriptKey, groupKey,
-		WithAssetVersion(protoAsset.Version),
+		asset.WithAssetVersion(protoAsset.Version),
 	)
 }
 
 // RandScriptKey creates a random script key for testing.
-func RandScriptKey(t testing.TB) ScriptKey {
-	return NewScriptKey(test.RandPrivKey(t).PubKey())
+func RandScriptKey(t testing.TB) asset.ScriptKey {
+	return asset.NewScriptKey(test.RandPrivKey(t).PubKey())
 }
 
 // RandSerializedKey creates a random serialized key for testing.
-func RandSerializedKey(t testing.TB) SerializedKey {
-	return ToSerialized(test.RandPrivKey(t).PubKey())
+func RandSerializedKey(t testing.TB) asset.SerializedKey {
+	return asset.ToSerialized(test.RandPrivKey(t).PubKey())
 }
 
 // RandID creates a random asset ID.
-func RandID(t testing.TB) ID {
-	var a ID
+func RandID(t testing.TB) asset.ID {
+	var a asset.ID
 	test.RandRead(t, a[:])
 
 	return a
 }
 
 // RandAssetType creates a random asset type.
-func RandAssetType(t testing.TB) Type {
+func RandAssetType(t testing.TB) asset.Type {
 	isCollectible := test.RandBool()
 	if isCollectible {
-		return Collectible
+		return asset.Collectible
 	}
 
-	return Normal
+	return asset.Normal
 }
 
 // NewAssetNoErr creates an asset and fails the test if asset creation fails.
-func NewAssetNoErr(t testing.TB, gen Genesis, amt, locktime, relocktime uint64,
-	scriptKey ScriptKey, groupKey *GroupKey, opts ...NewAssetOpt) *Asset {
+func NewAssetNoErr(t testing.TB, gen asset.Genesis, amt, locktime,
+	relocktime uint64, scriptKey asset.ScriptKey, groupKey *asset.GroupKey,
+	opts ...asset.NewAssetOpt) *asset.Asset {
 
-	a, err := New(
+	a, err := asset.New(
 		gen, amt, locktime, relocktime, scriptKey, groupKey, opts...,
 	)
 	require.NoError(t, err)
@@ -456,16 +461,19 @@ func NewAssetNoErr(t testing.TB, gen Genesis, amt, locktime, relocktime uint64,
 }
 
 func NewGroupKeyRequestNoErr(t testing.TB, internalKey keychain.KeyDescriptor,
-	gen Genesis, newAsset *Asset, scriptRoot []byte) *GroupKeyRequest {
+	gen asset.Genesis, newAsset *asset.Asset,
+	scriptRoot []byte) *asset.GroupKeyRequest {
 
-	req, err := NewGroupKeyRequest(internalKey, gen, newAsset, scriptRoot)
+	req, err := asset.NewGroupKeyRequest(
+		internalKey, gen, newAsset, scriptRoot,
+	)
 	require.NoError(t, err)
 
 	return req
 }
 
 // RandAsset creates a random asset of the given type for testing.
-func RandAsset(t testing.TB, assetType Type) *Asset {
+func RandAsset(t testing.TB, assetType asset.Type) *asset.Asset {
 	t.Helper()
 
 	genesis := RandGenesis(t, assetType)
@@ -476,37 +484,37 @@ func RandAsset(t testing.TB, assetType Type) *Asset {
 	return NewAssetNoErr(
 		t, genesis, protoAsset.Amount, protoAsset.LockTime,
 		protoAsset.RelativeLockTime, scriptKey, familyKey,
-		WithAssetVersion(protoAsset.Version),
+		asset.WithAssetVersion(protoAsset.Version),
 	)
 }
 
 // RandAssetWithValues creates a random asset with the given genesis and keys
 // for testing.
-func RandAssetWithValues(t testing.TB, genesis Genesis, groupKey *GroupKey,
-	scriptKey ScriptKey) *Asset {
+func RandAssetWithValues(t testing.TB, genesis asset.Genesis,
+	groupKey *asset.GroupKey, scriptKey asset.ScriptKey) *asset.Asset {
 
 	t.Helper()
 
 	units := test.RandInt[uint32]() + 1
 
 	switch genesis.Type {
-	case Normal:
+	case asset.Normal:
 
-	case Collectible:
+	case asset.Collectible:
 		units = 1
 
 	default:
 		t.Fatal("unhandled asset type", genesis.Type)
 	}
 
-	var assetVersion Version
+	var assetVersion asset.Version
 	if test.RandInt[uint8]()%2 == 0 {
-		assetVersion = V1
+		assetVersion = asset.V1
 	}
 
 	return NewAssetNoErr(
 		t, genesis, uint64(units), 0, 0, scriptKey, groupKey,
-		WithAssetVersion(assetVersion),
+		asset.WithAssetVersion(assetVersion),
 	)
 }
 
@@ -527,7 +535,7 @@ type TestVectors struct {
 	ErrorTestCases []*ErrorTestCase `json:"error_test_cases"`
 }
 
-func NewTestFromAsset(t testing.TB, a *Asset) *TestAsset {
+func NewTestFromAsset(t testing.TB, a *asset.Asset) *TestAsset {
 	ta := &TestAsset{
 		Version:             uint8(a.Version),
 		GenesisFirstPrevOut: a.Genesis.FirstPrevOut.String(),
@@ -549,7 +557,7 @@ func NewTestFromAsset(t testing.TB, a *Asset) *TestAsset {
 	}
 
 	if a.SplitCommitmentRoot != nil {
-		ta.SplitCommitmentRoot = mssmt.NewTestFromNode(
+		ta.SplitCommitmentRoot = mssmtmock.NewTestFromNode(
 			t, a.SplitCommitmentRoot,
 		)
 	}
@@ -562,23 +570,23 @@ func NewTestFromAsset(t testing.TB, a *Asset) *TestAsset {
 }
 
 type TestAsset struct {
-	Version             uint8           `json:"version"`
-	GenesisFirstPrevOut string          `json:"genesis_first_prev_out"`
-	GenesisTag          string          `json:"genesis_tag"`
-	GenesisMetaHash     string          `json:"genesis_meta_hash"`
-	GenesisOutputIndex  uint32          `json:"genesis_output_index"`
-	GenesisType         uint8           `json:"genesis_type"`
-	Amount              uint64          `json:"amount"`
-	LockTime            uint64          `json:"lock_time"`
-	RelativeLockTime    uint64          `json:"relative_lock_time"`
-	PrevWitnesses       []*TestWitness  `json:"prev_witnesses"`
-	SplitCommitmentRoot *mssmt.TestNode `json:"split_commitment_root"`
-	ScriptVersion       uint16          `json:"script_version"`
-	ScriptKey           string          `json:"script_key"`
-	GroupKey            *TestGroupKey   `json:"group_key"`
+	Version             uint8               `json:"version"`
+	GenesisFirstPrevOut string              `json:"genesis_first_prev_out"`
+	GenesisTag          string              `json:"genesis_tag"`
+	GenesisMetaHash     string              `json:"genesis_meta_hash"`
+	GenesisOutputIndex  uint32              `json:"genesis_output_index"`
+	GenesisType         uint8               `json:"genesis_type"`
+	Amount              uint64              `json:"amount"`
+	LockTime            uint64              `json:"lock_time"`
+	RelativeLockTime    uint64              `json:"relative_lock_time"`
+	PrevWitnesses       []*TestWitness      `json:"prev_witnesses"`
+	SplitCommitmentRoot *mssmtmock.TestNode `json:"split_commitment_root"`
+	ScriptVersion       uint16              `json:"script_version"`
+	ScriptKey           string              `json:"script_key"`
+	GroupKey            *TestGroupKey       `json:"group_key"`
 }
 
-func (ta *TestAsset) ToAsset(t testing.TB) *Asset {
+func (ta *TestAsset) ToAsset(t testing.TB) *asset.Asset {
 	t.Helper()
 
 	// Validate minimum fields are set. We use panic, so we can actually
@@ -605,22 +613,22 @@ func (ta *TestAsset) ToAsset(t testing.TB) *Asset {
 		}
 	}
 
-	a := &Asset{
-		Version: Version(ta.Version),
-		Genesis: Genesis{
+	a := &asset.Asset{
+		Version: asset.Version(ta.Version),
+		Genesis: asset.Genesis{
 			FirstPrevOut: test.ParseOutPoint(
 				t, ta.GenesisFirstPrevOut,
 			),
 			Tag:         ta.GenesisTag,
 			MetaHash:    test.Parse32Byte(t, ta.GenesisMetaHash),
 			OutputIndex: ta.GenesisOutputIndex,
-			Type:        Type(ta.GenesisType),
+			Type:        asset.Type(ta.GenesisType),
 		},
 		Amount:           ta.Amount,
 		LockTime:         ta.LockTime,
 		RelativeLockTime: ta.RelativeLockTime,
-		ScriptVersion:    ScriptVersion(ta.ScriptVersion),
-		ScriptKey: ScriptKey{
+		ScriptVersion:    asset.ScriptVersion(ta.ScriptVersion),
+		ScriptKey: asset.ScriptKey{
 			PubKey: test.ParsePubKey(t, ta.ScriptKey),
 		},
 	}
@@ -642,7 +650,7 @@ func (ta *TestAsset) ToAsset(t testing.TB) *Asset {
 	return a
 }
 
-func NewTestFromWitness(t testing.TB, w Witness) *TestWitness {
+func NewTestFromWitness(t testing.TB, w asset.Witness) *TestWitness {
 	t.Helper()
 
 	tw := &TestWitness{}
@@ -670,10 +678,10 @@ type TestWitness struct {
 	SplitCommitment *TestSplitCommitment `json:"split_commitment"`
 }
 
-func (tw *TestWitness) ToWitness(t testing.TB) Witness {
+func (tw *TestWitness) ToWitness(t testing.TB) asset.Witness {
 	t.Helper()
 
-	w := Witness{}
+	w := asset.Witness{}
 	if tw.PrevID != nil {
 		w.PrevID = tw.PrevID.ToPrevID(t)
 	}
@@ -689,7 +697,7 @@ func (tw *TestWitness) ToWitness(t testing.TB) Witness {
 	return w
 }
 
-func NewTestFromPrevID(prevID *PrevID) *TestPrevID {
+func NewTestFromPrevID(prevID *asset.PrevID) *TestPrevID {
 	return &TestPrevID{
 		OutPoint:  prevID.OutPoint.String(),
 		AssetID:   hex.EncodeToString(prevID.ID[:]),
@@ -703,12 +711,12 @@ type TestPrevID struct {
 	ScriptKey string `json:"script_key"`
 }
 
-func (tpv *TestPrevID) ToPrevID(t testing.TB) *PrevID {
+func (tpv *TestPrevID) ToPrevID(t testing.TB) *asset.PrevID {
 	if tpv.OutPoint == "" || tpv.AssetID == "" || tpv.ScriptKey == "" {
 		return nil
 	}
 
-	return &PrevID{
+	return &asset.PrevID{
 		OutPoint:  test.ParseOutPoint(t, tpv.OutPoint),
 		ID:        test.Parse32Byte(t, tpv.AssetID),
 		ScriptKey: test.Parse33Byte(t, tpv.ScriptKey),
@@ -716,7 +724,7 @@ func (tpv *TestPrevID) ToPrevID(t testing.TB) *PrevID {
 }
 
 func NewTestFromSplitCommitment(t testing.TB,
-	sc *SplitCommitment) *TestSplitCommitment {
+	sc *asset.SplitCommitment) *TestSplitCommitment {
 
 	t.Helper()
 
@@ -736,12 +744,12 @@ type TestSplitCommitment struct {
 }
 
 func (tsc *TestSplitCommitment) ToSplitCommitment(
-	t testing.TB) *SplitCommitment {
+	t testing.TB) *asset.SplitCommitment {
 
 	t.Helper()
 
-	sc := &SplitCommitment{
-		Proof: mssmt.ParseProof(t, tsc.Proof),
+	sc := &asset.SplitCommitment{
+		Proof: mssmtmock.ParseProof(t, tsc.Proof),
 	}
 	if tsc.RootAsset != nil {
 		sc.RootAsset = *tsc.RootAsset.ToAsset(t)
@@ -750,7 +758,7 @@ func (tsc *TestSplitCommitment) ToSplitCommitment(
 	return sc
 }
 
-func NewTestFromGroupKey(t testing.TB, gk *GroupKey) *TestGroupKey {
+func NewTestFromGroupKey(t testing.TB, gk *asset.GroupKey) *TestGroupKey {
 	t.Helper()
 
 	return &TestGroupKey{
@@ -762,10 +770,10 @@ type TestGroupKey struct {
 	GroupKey string `json:"group_key"`
 }
 
-func (tgk *TestGroupKey) ToGroupKey(t testing.TB) *GroupKey {
+func (tgk *TestGroupKey) ToGroupKey(t testing.TB) *asset.GroupKey {
 	t.Helper()
 
-	return &GroupKey{
+	return &asset.GroupKey{
 		GroupPubKey: *test.ParsePubKey(t, tgk.GroupKey),
 	}
 }
@@ -783,7 +791,9 @@ type BurnTestVectors struct {
 	ValidTestCases []*ValidBurnTestCase `json:"valid_test_cases"`
 }
 
-func NewTestFromGenesisReveal(t testing.TB, g *Genesis) *TestGenesisReveal {
+func NewTestFromGenesisReveal(t testing.TB,
+	g *asset.Genesis) *TestGenesisReveal {
+
 	t.Helper()
 
 	return &TestGenesisReveal{
@@ -803,22 +813,22 @@ type TestGenesisReveal struct {
 	Type         uint8  `json:"type"`
 }
 
-func (tgr *TestGenesisReveal) ToGenesisReveal(t testing.TB) *Genesis {
+func (tgr *TestGenesisReveal) ToGenesisReveal(t testing.TB) *asset.Genesis {
 	t.Helper()
 
-	return &Genesis{
+	return &asset.Genesis{
 		FirstPrevOut: test.ParseOutPoint(
 			t, tgr.FirstPrevOut,
 		),
 		Tag:         tgr.Tag,
 		MetaHash:    test.Parse32Byte(t, tgr.MetaHash),
 		OutputIndex: tgr.OutputIndex,
-		Type:        Type(tgr.Type),
+		Type:        asset.Type(tgr.Type),
 	}
 }
 
 func NewTestFromGroupKeyReveal(t testing.TB,
-	gkr *GroupKeyReveal) *TestGroupKeyReveal {
+	gkr *asset.GroupKeyReveal) *TestGroupKeyReveal {
 
 	t.Helper()
 
@@ -833,15 +843,17 @@ type TestGroupKeyReveal struct {
 	TapscriptRoot string `json:"tapscript_root"`
 }
 
-func (tgkr *TestGroupKeyReveal) ToGroupKeyReveal(t testing.TB) *GroupKeyReveal {
+func (tgkr *TestGroupKeyReveal) ToGroupKeyReveal(
+	t testing.TB) *asset.GroupKeyReveal {
+
 	t.Helper()
 
 	rawKey := test.ParsePubKey(t, tgkr.RawKey)
 	tapscriptRoot, err := hex.DecodeString(tgkr.TapscriptRoot)
 	require.NoError(t, err)
 
-	return &GroupKeyReveal{
-		RawKey:        ToSerialized(rawKey),
+	return &asset.GroupKeyReveal{
+		RawKey:        asset.ToSerialized(rawKey),
 		TapscriptRoot: tapscriptRoot,
 	}
 }

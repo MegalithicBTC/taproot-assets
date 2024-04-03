@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/fn"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tapdb/sqlc"
@@ -114,18 +115,18 @@ func storeGroupGenesis(t *testing.T, ctx context.Context, initGen asset.Genesis,
 	*asset.AssetGroup) {
 
 	// Generate the signature for our group genesis asset.
-	genSigner := asset.NewMockGenesisSigner(groupPriv)
-	genTxBuilder := asset.MockGroupTxBuilder{}
+	genSigner := assetmock.NewMockGenesisSigner(groupPriv)
+	genTxBuilder := assetmock.MockGroupTxBuilder{}
 
 	// Select the correct genesis for the new asset.
 	assetGen := initGen
 	if currentGen != nil {
 		assetGen = *currentGen
 	}
-	genProtoAsset := asset.RandAssetWithValues(
-		t, assetGen, nil, asset.RandScriptKey(t),
+	genProtoAsset := assetmock.RandAssetWithValues(
+		t, assetGen, nil, assetmock.RandScriptKey(t),
 	)
-	groupReq := asset.NewGroupKeyRequestNoErr(
+	groupReq := assetmock.NewGroupKeyRequestNoErr(
 		t, privDesc, initGen, genProtoAsset, nil,
 	)
 	groupKey, err := asset.DeriveGroupKey(
@@ -133,8 +134,8 @@ func storeGroupGenesis(t *testing.T, ctx context.Context, initGen asset.Genesis,
 	)
 	require.NoError(t, err)
 
-	initialAsset := asset.RandAssetWithValues(
-		t, assetGen, groupKey, asset.RandScriptKey(t),
+	initialAsset := assetmock.RandAssetWithValues(
+		t, assetGen, groupKey, assetmock.RandScriptKey(t),
 	)
 
 	// Insert the group genesis asset, which will also insert the group key
@@ -316,7 +317,7 @@ func addRandGroupToBatch(t *testing.T, store *AssetMintingStore,
 	// Generate a random genesis and group to use as a group anchor
 	// for this seedling.
 	privDesc, groupPriv := randKeyDesc(t)
-	randGenesis := asset.RandGenesis(t, randAssetType)
+	randGenesis := assetmock.RandGenesis(t, randAssetType)
 	genesisAmt, groupPriv, group := storeGroupGenesis(
 		t, ctx, randGenesis, nil, store, privDesc, groupPriv,
 	)
@@ -566,20 +567,22 @@ func seedlingsToAssetRoot(t *testing.T, genesisPoint wire.OutPoint,
 		}
 
 		if groupInfo != nil {
-			groupReq := asset.NewGroupKeyRequestNoErr(
+			groupReq := assetmock.NewGroupKeyRequestNoErr(
 				t, groupInfo.GroupKey.RawKey,
 				*groupInfo.Genesis, protoAsset, nil,
 			)
 			groupKey, err = asset.DeriveGroupKey(
-				asset.NewMockGenesisSigner(groupPriv),
+				assetmock.NewMockGenesisSigner(groupPriv),
 				&genTxBuilder, *groupReq,
 			)
 		}
 
 		if seedling.EnableEmission {
 			groupKeyRaw, newGroupPriv := randKeyDesc(t)
-			genSigner := asset.NewMockGenesisSigner(newGroupPriv)
-			groupReq := asset.NewGroupKeyRequestNoErr(
+			genSigner := assetmock.NewMockGenesisSigner(
+				newGroupPriv,
+			)
+			groupReq := assetmock.NewGroupKeyRequestNoErr(
 				t, groupKeyRaw, assetGen, protoAsset, nil,
 			)
 			groupKey, err = asset.DeriveGroupKey(
@@ -1119,16 +1122,16 @@ func TestGroupStore(t *testing.T) {
 	// Now we generate and store one group of two assets, and
 	// a collectible in its own group.
 	privDesc1, groupPriv1 := randKeyDesc(t)
-	gen1 := asset.RandGenesis(t, asset.Normal)
+	gen1 := assetmock.RandGenesis(t, asset.Normal)
 	_, _, group1 := storeGroupGenesis(
 		t, ctx, gen1, nil, assetStore, privDesc1, groupPriv1,
 	)
 	privDesc2, groupPriv2 := randKeyDesc(t)
-	gen2 := asset.RandGenesis(t, asset.Collectible)
+	gen2 := assetmock.RandGenesis(t, asset.Collectible)
 	_, _, group2 := storeGroupGenesis(
 		t, ctx, gen2, nil, assetStore, privDesc2, groupPriv2,
 	)
-	gen3 := asset.RandGenesis(t, asset.Normal)
+	gen3 := assetmock.RandGenesis(t, asset.Normal)
 	_, _, group3 := storeGroupGenesis(
 		t, ctx, gen1, &gen3, assetStore, privDesc1, groupPriv1,
 	)

@@ -18,23 +18,28 @@ import (
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/fn"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	commitmentmock "github.com/lightninglabs/taproot-assets/internal/mock/commitment"
 	"github.com/lightninglabs/taproot-assets/internal/test"
+	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
 func RandProof(t testing.TB, genesis asset.Genesis,
 	scriptKey *btcec.PublicKey, block wire.MsgBlock, txIndex int,
-	outputIndex uint32) Proof {
+	outputIndex uint32) proof.Proof {
 
-	txMerkleProof, err := NewTxMerkleProof(block.Transactions, txIndex)
+	txMerkleProof, err := proof.NewTxMerkleProof(
+		block.Transactions, txIndex,
+	)
 	require.NoError(t, err)
 
 	tweakedScriptKey := asset.NewScriptKey(scriptKey)
-	protoAsset := asset.NewAssetNoErr(
+	protoAsset := assetmock.NewAssetNoErr(
 		t, genesis, 1, 0, 0, tweakedScriptKey, nil,
 	)
-	groupKey := asset.RandGroupKey(t, genesis, protoAsset)
+	groupKey := assetmock.RandGroupKey(t, genesis, protoAsset)
 	groupReveal := asset.GroupKeyReveal{
 		RawKey:        asset.ToSerialized(&groupKey.GroupPubKey),
 		TapscriptRoot: test.RandBytes(32),
@@ -83,27 +88,27 @@ func RandProof(t testing.TB, genesis asset.Genesis,
 	testBranchPreimage := commitment.NewPreimageFromBranch(
 		txscript.NewTapBranch(leaf1, leaf2),
 	)
-	return Proof{
+	return proof.Proof{
 		PrevOut:       genesis.FirstPrevOut,
 		BlockHeader:   block.Header,
 		BlockHeight:   42,
 		AnchorTx:      *block.Transactions[txIndex],
 		TxMerkleProof: *txMerkleProof,
 		Asset:         *proofAsset,
-		InclusionProof: TaprootProof{
+		InclusionProof: proof.TaprootProof{
 			OutputIndex: outputIndex,
 			InternalKey: test.RandPubKey(t),
-			CommitmentProof: &CommitmentProof{
+			CommitmentProof: &proof.CommitmentProof{
 				Proof:              *commitmentProof,
 				TapSiblingPreimage: testLeafPreimage,
 			},
 			TapscriptProof: nil,
 		},
-		ExclusionProofs: []TaprootProof{
+		ExclusionProofs: []proof.TaprootProof{
 			{
 				OutputIndex: 2,
 				InternalKey: test.RandPubKey(t),
-				CommitmentProof: &CommitmentProof{
+				CommitmentProof: &proof.CommitmentProof{
 					Proof:              *commitmentProof,
 					TapSiblingPreimage: testLeafPreimage,
 				},
@@ -113,7 +118,7 @@ func RandProof(t testing.TB, genesis asset.Genesis,
 				OutputIndex:     3,
 				InternalKey:     test.RandPubKey(t),
 				CommitmentProof: nil,
-				TapscriptProof: &TapscriptProof{
+				TapscriptProof: &proof.TapscriptProof{
 					TapPreimage1: &testBranchPreimage,
 					TapPreimage2: testLeafPreimage2,
 					Bip86:        true,
@@ -123,22 +128,22 @@ func RandProof(t testing.TB, genesis asset.Genesis,
 				OutputIndex:     4,
 				InternalKey:     test.RandPubKey(t),
 				CommitmentProof: nil,
-				TapscriptProof: &TapscriptProof{
+				TapscriptProof: &proof.TapscriptProof{
 					Bip86: true,
 				},
 			},
 		},
-		SplitRootProof: &TaprootProof{
+		SplitRootProof: &proof.TaprootProof{
 			OutputIndex: 4,
 			InternalKey: test.RandPubKey(t),
-			CommitmentProof: &CommitmentProof{
+			CommitmentProof: &proof.CommitmentProof{
 				Proof:              *commitmentProof,
 				TapSiblingPreimage: nil,
 			},
 		},
-		MetaReveal: &MetaReveal{
+		MetaReveal: &proof.MetaReveal{
 			Data: []byte("quoth the raven nevermore"),
-			Type: MetaOpaque,
+			Type: proof.MetaOpaque,
 		},
 		ChallengeWitness: wire.TxWitness{[]byte("foo"), []byte("bar")},
 		GenesisReveal:    &genesis,
@@ -156,10 +161,11 @@ func NewMockVerifier(t *testing.T) *MockVerifier {
 	}
 }
 
-func (m *MockVerifier) Verify(context.Context, io.Reader,
-	HeaderVerifier, MerkleVerifier, GroupVerifier) (*AssetSnapshot, error) {
+func (m *MockVerifier) Verify(context.Context, io.Reader, proof.HeaderVerifier,
+	proof.MerkleVerifier, proof.GroupVerifier) (*proof.AssetSnapshot,
+	error) {
 
-	return &AssetSnapshot{
+	return &proof.AssetSnapshot{
 		Asset: &asset.Asset{
 
 			GroupKey: &asset.GroupKey{
@@ -180,7 +186,7 @@ func MockHeaderVerifier(header wire.BlockHeader, height uint32) error {
 }
 
 // MockMerkleVerifier is a mock verifier which approves of all merkle proofs.
-func MockMerkleVerifier(*wire.MsgTx, *TxMerkleProof, [32]byte) error {
+func MockMerkleVerifier(*wire.MsgTx, *proof.TxMerkleProof, [32]byte) error {
 	return nil
 }
 
@@ -210,13 +216,13 @@ func MockGroupAnchorVerifier(gen *asset.Genesis,
 // MockProofCourierDispatcher is a mock proof courier dispatcher which returns
 // the same courier for all requests.
 type MockProofCourierDispatcher struct {
-	Courier Courier
+	Courier proof.Courier
 }
 
 // NewCourier instantiates a new courier service handle given a service
 // URL address.
-func (m *MockProofCourierDispatcher) NewCourier(*url.URL, Recipient) (Courier,
-	error) {
+func (m *MockProofCourierDispatcher) NewCourier(*url.URL,
+	proof.Recipient) (proof.Courier, error) {
 
 	return m.Courier, nil
 }
@@ -226,7 +232,7 @@ func (m *MockProofCourierDispatcher) NewCourier(*url.URL, Recipient) (Courier,
 type MockProofCourier struct {
 	sync.Mutex
 
-	currentProofs map[asset.SerializedKey]*AnnotatedProof
+	currentProofs map[asset.SerializedKey]*proof.AnnotatedProof
 
 	subscribers map[uint64]*fn.EventReceiver[fn.Event]
 }
@@ -234,7 +240,9 @@ type MockProofCourier struct {
 // NewMockProofCourier returns a new mock proof courier.
 func NewMockProofCourier() *MockProofCourier {
 	return &MockProofCourier{
-		currentProofs: make(map[asset.SerializedKey]*AnnotatedProof),
+		currentProofs: make(
+			map[asset.SerializedKey]*proof.AnnotatedProof,
+		),
 	}
 }
 
@@ -251,7 +259,7 @@ func (m *MockProofCourier) Stop() error {
 // DeliverProof attempts to delivery a proof to the receiver, using the
 // information in the Addr type.
 func (m *MockProofCourier) DeliverProof(_ context.Context,
-	proof *AnnotatedProof) error {
+	proof *proof.AnnotatedProof) error {
 
 	m.Lock()
 	defer m.Unlock()
@@ -264,37 +272,37 @@ func (m *MockProofCourier) DeliverProof(_ context.Context,
 // ReceiveProof attempts to obtain a proof as identified by the passed
 // locator from the source encapsulated within the specified address.
 func (m *MockProofCourier) ReceiveProof(_ context.Context,
-	loc Locator) (*AnnotatedProof, error) {
+	loc proof.Locator) (*proof.AnnotatedProof, error) {
 
 	m.Lock()
 	defer m.Unlock()
 
-	proof, ok := m.currentProofs[asset.ToSerialized(&loc.ScriptKey)]
+	p, ok := m.currentProofs[asset.ToSerialized(&loc.ScriptKey)]
 	if !ok {
-		return nil, ErrProofNotFound
+		return nil, proof.ErrProofNotFound
 	}
 
-	return &AnnotatedProof{
-		Locator: Locator{
-			AssetID:   proof.Locator.AssetID,
-			GroupKey:  proof.Locator.GroupKey,
-			ScriptKey: proof.Locator.ScriptKey,
-			OutPoint:  proof.Locator.OutPoint,
+	return &proof.AnnotatedProof{
+		Locator: proof.Locator{
+			AssetID:   p.Locator.AssetID,
+			GroupKey:  p.Locator.GroupKey,
+			ScriptKey: p.Locator.ScriptKey,
+			OutPoint:  p.Locator.OutPoint,
 		},
-		Blob: proof.Blob,
-		AssetSnapshot: &AssetSnapshot{
-			Asset:             proof.AssetSnapshot.Asset,
-			OutPoint:          proof.AssetSnapshot.OutPoint,
-			AnchorBlockHash:   proof.AssetSnapshot.AnchorBlockHash,
-			AnchorBlockHeight: proof.AssetSnapshot.AnchorBlockHeight,
-			AnchorTxIndex:     proof.AssetSnapshot.AnchorTxIndex,
-			AnchorTx:          proof.AssetSnapshot.AnchorTx,
-			OutputIndex:       proof.AssetSnapshot.OutputIndex,
-			InternalKey:       proof.AssetSnapshot.InternalKey,
-			ScriptRoot:        proof.AssetSnapshot.ScriptRoot,
-			TapscriptSibling:  proof.AssetSnapshot.TapscriptSibling,
-			SplitAsset:        proof.AssetSnapshot.SplitAsset,
-			MetaReveal:        proof.AssetSnapshot.MetaReveal,
+		Blob: p.Blob,
+		AssetSnapshot: &proof.AssetSnapshot{
+			Asset:             p.AssetSnapshot.Asset,
+			OutPoint:          p.AssetSnapshot.OutPoint,
+			AnchorBlockHash:   p.AssetSnapshot.AnchorBlockHash,
+			AnchorBlockHeight: p.AssetSnapshot.AnchorBlockHeight,
+			AnchorTxIndex:     p.AssetSnapshot.AnchorTxIndex,
+			AnchorTx:          p.AssetSnapshot.AnchorTx,
+			OutputIndex:       p.AssetSnapshot.OutputIndex,
+			InternalKey:       p.AssetSnapshot.InternalKey,
+			ScriptRoot:        p.AssetSnapshot.ScriptRoot,
+			TapscriptSibling:  p.AssetSnapshot.TapscriptSibling,
+			SplitAsset:        p.AssetSnapshot.SplitAsset,
+			MetaReveal:        p.AssetSnapshot.MetaReveal,
 		},
 	}, nil
 }
@@ -315,7 +323,7 @@ func (m *MockProofCourier) Close() error {
 	return nil
 }
 
-var _ Courier = (*MockProofCourier)(nil)
+var _ proof.Courier = (*MockProofCourier)(nil)
 
 type ValidTestCase struct {
 	Proof    *TestProof `json:"proof"`
@@ -334,7 +342,7 @@ type TestVectors struct {
 	ErrorTestCases []*ErrorTestCase `json:"error_test_cases"`
 }
 
-func NewTestFromProof(t testing.TB, p *Proof) *TestProof {
+func NewTestFromProof(t testing.TB, p *proof.Proof) *TestProof {
 	t.Helper()
 
 	tp := &TestProof{
@@ -343,7 +351,7 @@ func NewTestFromProof(t testing.TB, p *Proof) *TestProof {
 		BlockHeight:    p.BlockHeight,
 		AnchorTx:       test.HexTx(t, &p.AnchorTx),
 		TxMerkleProof:  NewTestFromTxMerkleProof(t, &p.TxMerkleProof),
-		Asset:          asset.NewTestFromAsset(t, &p.Asset),
+		Asset:          assetmock.NewTestFromAsset(t, &p.Asset),
 		InclusionProof: NewTestFromTaprootProof(t, &p.InclusionProof),
 	}
 
@@ -380,13 +388,13 @@ func NewTestFromProof(t testing.TB, p *Proof) *TestProof {
 	}
 
 	if p.GenesisReveal != nil {
-		tp.GenesisReveal = asset.NewTestFromGenesisReveal(
+		tp.GenesisReveal = assetmock.NewTestFromGenesisReveal(
 			t, p.GenesisReveal,
 		)
 	}
 
 	if p.GroupKeyReveal != nil {
-		tp.GroupKeyReveal = asset.NewTestFromGroupKeyReveal(
+		tp.GroupKeyReveal = assetmock.NewTestFromGroupKeyReveal(
 			t, p.GroupKeyReveal,
 		)
 	}
@@ -395,26 +403,26 @@ func NewTestFromProof(t testing.TB, p *Proof) *TestProof {
 }
 
 type TestProof struct {
-	PrevOut          string                    `json:"prev_out"`
-	BlockHeader      *TestBlockHeader          `json:"block_header"`
-	BlockHeight      uint32                    `json:"block_height"`
-	AnchorTx         string                    `json:"anchor_tx"`
-	TxMerkleProof    *TestTxMerkleProof        `json:"tx_merkle_proof"`
-	Asset            *asset.TestAsset          `json:"asset"`
-	InclusionProof   *TestTaprootProof         `json:"inclusion_proof"`
-	ExclusionProofs  []*TestTaprootProof       `json:"exclusion_proofs"`
-	SplitRootProof   *TestTaprootProof         `json:"split_root_proof"`
-	MetaReveal       *TestMetaReveal           `json:"meta_reveal"`
-	AdditionalInputs []string                  `json:"additional_inputs"`
-	ChallengeWitness []string                  `json:"challenge_witness"`
-	GenesisReveal    *asset.TestGenesisReveal  `json:"genesis_reveal"`
-	GroupKeyReveal   *asset.TestGroupKeyReveal `json:"group_key_reveal"`
+	PrevOut          string                        `json:"prev_out"`
+	BlockHeader      *TestBlockHeader              `json:"block_header"`
+	BlockHeight      uint32                        `json:"block_height"`
+	AnchorTx         string                        `json:"anchor_tx"`
+	TxMerkleProof    *TestTxMerkleProof            `json:"tx_merkle_proof"`
+	Asset            *assetmock.TestAsset          `json:"asset"`
+	InclusionProof   *TestTaprootProof             `json:"inclusion_proof"`
+	ExclusionProofs  []*TestTaprootProof           `json:"exclusion_proofs"`
+	SplitRootProof   *TestTaprootProof             `json:"split_root_proof"`
+	MetaReveal       *TestMetaReveal               `json:"meta_reveal"`
+	AdditionalInputs []string                      `json:"additional_inputs"`
+	ChallengeWitness []string                      `json:"challenge_witness"`
+	GenesisReveal    *assetmock.TestGenesisReveal  `json:"genesis_reveal"`
+	GroupKeyReveal   *assetmock.TestGroupKeyReveal `json:"group_key_reveal"`
 }
 
-func (tp *TestProof) ToProof(t testing.TB) *Proof {
+func (tp *TestProof) ToProof(t testing.TB) *proof.Proof {
 	t.Helper()
 
-	p := &Proof{
+	p := &proof.Proof{
 		PrevOut:        test.ParseOutPoint(t, tp.PrevOut),
 		BlockHeader:    *tp.BlockHeader.ToBlockHeader(t),
 		BlockHeight:    tp.BlockHeight,
@@ -443,7 +451,7 @@ func (tp *TestProof) ToProof(t testing.TB) *Proof {
 		b, err := hex.DecodeString(tp.AdditionalInputs[i])
 		require.NoError(t, err)
 
-		var inputProof File
+		var inputProof proof.File
 		err = inputProof.Decode(bytes.NewReader(b))
 		require.NoError(t, err)
 
@@ -506,7 +514,7 @@ func (tbh *TestBlockHeader) ToBlockHeader(t testing.TB) *wire.BlockHeader {
 }
 
 func NewTestFromTxMerkleProof(t testing.TB,
-	p *TxMerkleProof) *TestTxMerkleProof {
+	p *proof.TxMerkleProof) *TestTxMerkleProof {
 
 	t.Helper()
 
@@ -526,7 +534,9 @@ type TestTxMerkleProof struct {
 	Bits  []bool   `json:"bits"`
 }
 
-func (tmp *TestTxMerkleProof) ToTxMerkleProof(t testing.TB) *TxMerkleProof {
+func (tmp *TestTxMerkleProof) ToTxMerkleProof(
+	t testing.TB) *proof.TxMerkleProof {
+
 	t.Helper()
 
 	nodes := make([]chainhash.Hash, len(tmp.Nodes))
@@ -534,14 +544,14 @@ func (tmp *TestTxMerkleProof) ToTxMerkleProof(t testing.TB) *TxMerkleProof {
 		nodes[i] = test.ParseChainHash(t, n)
 	}
 
-	return &TxMerkleProof{
+	return &proof.TxMerkleProof{
 		Nodes: nodes,
 		Bits:  tmp.Bits,
 	}
 }
 
 func NewTestFromTaprootProof(t testing.TB,
-	p *TaprootProof) *TestTaprootProof {
+	p *proof.TaprootProof) *TestTaprootProof {
 
 	t.Helper()
 
@@ -572,10 +582,10 @@ type TestTaprootProof struct {
 	TapscriptProof  *TestTapscriptProof  `json:"tapscript_proof"`
 }
 
-func (ttp *TestTaprootProof) ToTaprootProof(t testing.TB) *TaprootProof {
+func (ttp *TestTaprootProof) ToTaprootProof(t testing.TB) *proof.TaprootProof {
 	t.Helper()
 
-	p := &TaprootProof{
+	p := &proof.TaprootProof{
 		OutputIndex: ttp.OutputIndex,
 		InternalKey: test.ParsePubKey(t, ttp.InternalKey),
 	}
@@ -592,45 +602,49 @@ func (ttp *TestTaprootProof) ToTaprootProof(t testing.TB) *TaprootProof {
 }
 
 func NewTestFromCommitmentProof(t testing.TB,
-	p *CommitmentProof) *TestCommitmentProof {
+	p *proof.CommitmentProof) *TestCommitmentProof {
 
 	t.Helper()
 
 	return &TestCommitmentProof{
-		Proof: commitment.NewTestFromProof(t, &p.Proof),
-		TapscriptSibling: commitment.HexTapscriptSibling(
+		Proof: commitmentmock.NewTestFromProof(t, &p.Proof),
+		TapscriptSibling: commitmentmock.HexTapscriptSibling(
 			t, p.TapSiblingPreimage,
 		),
 	}
 }
 
 type TestCommitmentProof struct {
-	Proof            *commitment.TestProof `json:"proof"`
-	TapscriptSibling string                `json:"tapscript_sibling"`
+	Proof            *commitmentmock.TestProof `json:"proof"`
+	TapscriptSibling string                    `json:"tapscript_sibling"`
 }
 
 func (tcp *TestCommitmentProof) ToCommitmentProof(
-	t testing.TB) *CommitmentProof {
+	t testing.TB) *proof.CommitmentProof {
 
 	t.Helper()
 
-	return &CommitmentProof{
+	return &proof.CommitmentProof{
 		Proof: *tcp.Proof.ToProof(t),
-		TapSiblingPreimage: commitment.ParseTapscriptSibling(
+		TapSiblingPreimage: commitmentmock.ParseTapscriptSibling(
 			t, tcp.TapscriptSibling,
 		),
 	}
 }
 
 func NewTestFromTapscriptProof(t testing.TB,
-	p *TapscriptProof) *TestTapscriptProof {
+	p *proof.TapscriptProof) *TestTapscriptProof {
 
 	t.Helper()
 
 	return &TestTapscriptProof{
-		TapPreimage1: commitment.HexTapscriptSibling(t, p.TapPreimage1),
-		TapPreimage2: commitment.HexTapscriptSibling(t, p.TapPreimage2),
-		Bip86:        p.Bip86,
+		TapPreimage1: commitmentmock.HexTapscriptSibling(
+			t, p.TapPreimage1,
+		),
+		TapPreimage2: commitmentmock.HexTapscriptSibling(
+			t, p.TapPreimage2,
+		),
+		Bip86: p.Bip86,
 	}
 }
 
@@ -640,21 +654,23 @@ type TestTapscriptProof struct {
 	Bip86        bool   `json:"bip86"`
 }
 
-func (ttp *TestTapscriptProof) ToTapscriptProof(t testing.TB) *TapscriptProof {
+func (ttp *TestTapscriptProof) ToTapscriptProof(
+	t testing.TB) *proof.TapscriptProof {
+
 	t.Helper()
 
-	return &TapscriptProof{
-		TapPreimage1: commitment.ParseTapscriptSibling(
+	return &proof.TapscriptProof{
+		TapPreimage1: commitmentmock.ParseTapscriptSibling(
 			t, ttp.TapPreimage1,
 		),
-		TapPreimage2: commitment.ParseTapscriptSibling(
+		TapPreimage2: commitmentmock.ParseTapscriptSibling(
 			t, ttp.TapPreimage2,
 		),
 		Bip86: ttp.Bip86,
 	}
 }
 
-func NewTestFromMetaReveal(t testing.TB, m *MetaReveal) *TestMetaReveal {
+func NewTestFromMetaReveal(t testing.TB, m *proof.MetaReveal) *TestMetaReveal {
 	t.Helper()
 
 	return &TestMetaReveal{
@@ -668,14 +684,14 @@ type TestMetaReveal struct {
 	Data string `json:"data"`
 }
 
-func (tmr *TestMetaReveal) ToMetaReveal(t testing.TB) *MetaReveal {
+func (tmr *TestMetaReveal) ToMetaReveal(t testing.TB) *proof.MetaReveal {
 	t.Helper()
 
 	data, err := hex.DecodeString(tmr.Data)
 	require.NoError(t, err)
 
-	return &MetaReveal{
-		Type: MetaType(tmr.Type),
+	return &proof.MetaReveal{
+		Type: proof.MetaType(tmr.Type),
 		Data: data,
 	}
 }

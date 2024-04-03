@@ -10,6 +10,7 @@ import (
 
 	"github.com/lightninglabs/taproot-assets/fn"
 	"github.com/lightninglabs/taproot-assets/internal/test"
+	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,20 +22,20 @@ func RandLeafAmount() uint64 {
 }
 
 // RandProof returns a random proof for testing.
-func RandProof(t testing.TB) *Proof {
+func RandProof(t testing.TB) *mssmt.Proof {
 	var (
-		store      = NewDefaultStore()
-		tree  Tree = NewFullTree(store)
-		key1       = test.RandHash()
-		key2       = test.RandHash()
+		store            = mssmt.NewDefaultStore()
+		tree  mssmt.Tree = mssmt.NewFullTree(store)
+		key1             = test.RandHash()
+		key2             = test.RandHash()
 		err   error
 	)
 	tree, err = tree.Insert(
-		context.Background(), key1, NewLeafNode([]byte("foo"), 10),
+		context.Background(), key1, mssmt.NewLeafNode([]byte("foo"), 10),
 	)
 	require.NoError(t, err)
 	tree, err = tree.Insert(
-		context.Background(), key2, NewLeafNode([]byte("bar"), 20),
+		context.Background(), key2, mssmt.NewLeafNode([]byte("bar"), 20),
 	)
 	require.NoError(t, err)
 
@@ -43,13 +44,13 @@ func RandProof(t testing.TB) *Proof {
 	return proof
 }
 
-func ParseProof(t testing.TB, proofHex string) Proof {
+func ParseProof(t testing.TB, proofHex string) mssmt.Proof {
 	t.Helper()
 
 	proofBytes, err := hex.DecodeString(proofHex)
 	require.NoError(t, err)
 
-	var compressedProof CompressedProof
+	var compressedProof mssmt.CompressedProof
 	err = compressedProof.Decode(bytes.NewReader(proofBytes))
 	require.NoError(t, err)
 
@@ -59,7 +60,7 @@ func ParseProof(t testing.TB, proofHex string) Proof {
 	return *proof
 }
 
-func HexProof(t testing.TB, proof *Proof) string {
+func HexProof(t testing.TB, proof *mssmt.Proof) string {
 	t.Helper()
 
 	compressedProof := proof.Compress()
@@ -127,13 +128,13 @@ type TestProofCase struct {
 	CompressedProof string `json:"compressed_proof"`
 }
 
-func (tpc *TestProofCase) ToProof(t testing.TB) *Proof {
+func (tpc *TestProofCase) ToProof(t testing.TB) *mssmt.Proof {
 	t.Helper()
 
 	proofBytes, err := hex.DecodeString(tpc.CompressedProof)
 	require.NoError(t, err)
 
-	var compressedProof CompressedProof
+	var compressedProof mssmt.CompressedProof
 	err = compressedProof.Decode(bytes.NewReader(proofBytes))
 	require.NoError(t, err)
 
@@ -143,7 +144,7 @@ func (tpc *TestProofCase) ToProof(t testing.TB) *Proof {
 	return proof
 }
 
-func NewTestFromLeaf(t testing.TB, key [32]byte, leaf *LeafNode) *TestLeaf {
+func NewTestFromLeaf(t testing.TB, key [32]byte, leaf *mssmt.LeafNode) *TestLeaf {
 	t.Helper()
 
 	return &TestLeaf{
@@ -160,13 +161,13 @@ type TestLeaf struct {
 	Node *TestLeafNode `json:"node"`
 }
 
-func (tl *TestLeaf) ToLeafNode(t testing.TB) *LeafNode {
+func (tl *TestLeaf) ToLeafNode(t testing.TB) *mssmt.LeafNode {
 	t.Helper()
 
 	sum, err := strconv.ParseUint(tl.Node.Sum, 10, 64)
 	require.NoError(t, err)
 
-	return NewLeafNode(test.ParseHex(t, tl.Node.Value), sum)
+	return mssmt.NewLeafNode(test.ParseHex(t, tl.Node.Value), sum)
 }
 
 type TestLeafNode struct {
@@ -174,7 +175,7 @@ type TestLeafNode struct {
 	Sum   string `json:"sum"`
 }
 
-func NewTestFromProof(t testing.TB, p *Proof) *TestProof {
+func NewTestFromProof(t testing.TB, p *mssmt.Proof) *TestProof {
 	t.Helper()
 
 	compressedProof := p.Compress()
@@ -203,20 +204,20 @@ type TestProof struct {
 	Nodes map[int]*TestNode `json:"nodes"`
 }
 
-func (tp *TestProof) ToProof(t testing.TB) *Proof {
+func (tp *TestProof) ToProof(t testing.TB) *mssmt.Proof {
 	t.Helper()
 
-	nodes := make([]Node, len(tp.Nodes))
+	nodes := make([]mssmt.Node, len(tp.Nodes))
 	for idx := range tp.Nodes {
 		nodes[idx] = tp.Nodes[idx].ToNode(t)
 	}
 
-	return &Proof{
+	return &mssmt.Proof{
 		Nodes: nodes,
 	}
 }
 
-func NewTestFromNode(t testing.TB, node Node) *TestNode {
+func NewTestFromNode(t testing.TB, node mssmt.Node) *TestNode {
 	t.Helper()
 
 	nodeHash := node.NodeHash()
@@ -231,11 +232,11 @@ type TestNode struct {
 	Sum  string `json:"sum"`
 }
 
-func (tn *TestNode) ToNode(t testing.TB) ComputedNode {
+func (tn *TestNode) ToNode(t testing.TB) mssmt.ComputedNode {
 	t.Helper()
 
 	sum, err := strconv.ParseUint(tn.Sum, 10, 64)
 	require.NoError(t, err)
 
-	return NewComputedNode(test.Parse32Byte(t, tn.Hash), sum)
+	return mssmt.NewComputedNode(test.Parse32Byte(t, tn.Hash), sum)
 }

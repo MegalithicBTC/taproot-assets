@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	proofmock "github.com/lightninglabs/taproot-assets/internal/mock/proof"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tapfreighter"
@@ -431,7 +432,7 @@ func testBasicSendPassiveAsset(t *harnessTest) {
 	secondAsset := rpcAssets[1]
 	genInfo2 := secondAsset.AssetGenesis
 
-	testVectors := &proof.TestVectors{}
+	testVectors := &proofmock.TestVectors{}
 	addProofTestVectorFromFile(
 		t.t, "valid regtest genesis proof with meta reveal", t.tapd,
 		testVectors, rpcAssets[0].AssetGenesis, rpcAssets[0].ScriptKey,
@@ -1332,7 +1333,7 @@ func testSendNoCourierUniverseImport(t *harnessTest) {
 	secondTapd := setupTapdHarness(
 		t.t, t, t.lndHarness.Bob, t.universeServer,
 		func(params *tapdHarnessParams) {
-			params.proofCourier = &proof.MockProofCourier{}
+			params.proofCourier = &proofmock.MockProofCourier{}
 		},
 	)
 	defer func() {
@@ -1376,7 +1377,7 @@ func testSendNoCourierUniverseImport(t *harnessTest) {
 // addProofTestVectorFromFile adds a proof test vector by extracting it from the
 // proof file found at the given asset ID and script key.
 func addProofTestVectorFromFile(t *testing.T, testName string,
-	tapd *tapdHarness, vectors *proof.TestVectors,
+	tapd *tapdHarness, vectors *proofmock.TestVectors,
 	genInfo *taprpc.GenesisInfo, scriptKey []byte, fileIndex int,
 	binaryFileName string) {
 
@@ -1416,8 +1417,8 @@ func addProofTestVectorFromFile(t *testing.T, testName string,
 	require.NoError(t, err)
 
 	vectors.ValidTestCases = append(
-		vectors.ValidTestCases, &proof.ValidTestCase{
-			Proof:    proof.NewTestFromProof(t, p),
+		vectors.ValidTestCases, &proofmock.ValidTestCase{
+			Proof:    proofmock.NewTestFromProof(t, p),
 			Expected: hex.EncodeToString(rawProof),
 			Comment:  testName,
 		},
@@ -1427,15 +1428,16 @@ func addProofTestVectorFromFile(t *testing.T, testName string,
 // addProofTestVectorFromProof adds the given proof blob to the proof test
 // vector.
 func addProofTestVectorFromProof(t *testing.T, testName string,
-	vectors *proof.TestVectors, blob proof.Blob, binaryFileName string) {
+	vectors *proofmock.TestVectors, blob proof.Blob,
+	binaryFileName string) {
 
 	var p proof.Proof
 	err := p.Decode(bytes.NewReader(blob))
 	require.NoError(t, err)
 
 	vectors.ValidTestCases = append(
-		vectors.ValidTestCases, &proof.ValidTestCase{
-			Proof:    proof.NewTestFromProof(t, &p),
+		vectors.ValidTestCases, &proofmock.ValidTestCase{
+			Proof:    proofmock.NewTestFromProof(t, &p),
 			Expected: hex.EncodeToString(blob),
 			Comment:  testName,
 		},

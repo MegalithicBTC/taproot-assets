@@ -13,6 +13,8 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	mssmtmock "github.com/lightninglabs/taproot-assets/internal/mock/mssmt"
 	"github.com/lightninglabs/taproot-assets/internal/test"
 	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -39,7 +41,7 @@ func randAssetDetails(t *testing.T,
 	var amount uint64
 	switch assetType {
 	case asset.Normal:
-		amount = mssmt.RandLeafAmount()
+		amount = mssmtmock.RandLeafAmount()
 	case asset.Collectible:
 		amount = 1
 	}
@@ -66,35 +68,35 @@ func randAsset(t *testing.T, genesis asset.Genesis,
 
 	t.Helper()
 
-	scriptKey := asset.RandScriptKey(t)
-	return asset.RandAssetWithValues(t, genesis, groupKey, scriptKey)
+	scriptKey := assetmock.RandScriptKey(t)
+	return assetmock.RandAssetWithValues(t, genesis, groupKey, scriptKey)
 }
 
 // TestNewAssetCommitment tests edge cases around NewAssetCommitment.
 func TestNewAssetCommitment(t *testing.T) {
 	t.Parallel()
 
-	genesis1 := asset.RandGenesis(t, asset.Normal)
-	genesis2 := asset.RandGenesis(t, asset.Normal)
-	genesis1Collectible := asset.RandGenesis(t, asset.Collectible)
-	genesis1CollectibleProtoAsset := asset.NewAssetNoErr(
-		t, genesis1Collectible, 1, 0, 0, asset.RandScriptKey(t),
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
+	genesis2 := assetmock.RandGenesis(t, asset.Normal)
+	genesis1Collectible := assetmock.RandGenesis(t, asset.Collectible)
+	genesis1CollectibleProtoAsset := assetmock.NewAssetNoErr(
+		t, genesis1Collectible, 1, 0, 0, assetmock.RandScriptKey(t),
 		nil,
 	)
 	group1Anchor := randAsset(t, genesis1, nil)
-	groupKey1, group1PrivBytes := asset.RandGroupKeyWithSigner(
+	groupKey1, group1PrivBytes := assetmock.RandGroupKeyWithSigner(
 		t, genesis1, group1Anchor,
 	)
-	group1Anchor = asset.NewAssetNoErr(
+	group1Anchor = assetmock.NewAssetNoErr(
 		t, genesis1, group1Anchor.Amount, group1Anchor.LockTime,
 		group1Anchor.RelativeLockTime, group1Anchor.ScriptKey,
 		groupKey1, asset.WithAssetVersion(group1Anchor.Version),
 	)
-	groupKey1Collectible := asset.RandGroupKey(
+	groupKey1Collectible := assetmock.RandGroupKey(
 		t, genesis1Collectible, genesis1CollectibleProtoAsset,
 	)
 	genesis2ProtoAsset := randAsset(t, genesis2, nil)
-	groupKey2 := asset.RandGroupKey(t, genesis2, genesis2ProtoAsset)
+	groupKey2 := assetmock.RandGroupKey(t, genesis2, genesis2ProtoAsset)
 	copyOfGroupKey1Collectible := &asset.GroupKey{
 		RawKey:        groupKey1Collectible.RawKey,
 		GroupPubKey:   groupKey1Collectible.GroupPubKey,
@@ -102,18 +104,18 @@ func TestNewAssetCommitment(t *testing.T) {
 		Witness:       groupKey1Collectible.Witness,
 	}
 	group1Reissued := randAsset(t, genesis2, nil)
-	genTxBuilder := asset.MockGroupTxBuilder{}
+	genTxBuilder := assetmock.MockGroupTxBuilder{}
 	group1Priv, group1Pub := btcec.PrivKeyFromBytes(group1PrivBytes)
-	group1ReissuedGroupReq := asset.NewGroupKeyRequestNoErr(
+	group1ReissuedGroupReq := assetmock.NewGroupKeyRequestNoErr(
 		t, test.PubToKeyDesc(group1Pub), genesis1, genesis2ProtoAsset,
 		nil,
 	)
 	group1ReissuedGroupKey, err := asset.DeriveGroupKey(
-		asset.NewMockGenesisSigner(group1Priv), &genTxBuilder,
+		assetmock.NewMockGenesisSigner(group1Priv), &genTxBuilder,
 		*group1ReissuedGroupReq,
 	)
 	require.NoError(t, err)
-	group1Reissued = asset.NewAssetNoErr(
+	group1Reissued = assetmock.NewAssetNoErr(
 		t, genesis2, group1Reissued.Amount, group1Reissued.LockTime,
 		group1Reissued.RelativeLockTime, group1Reissued.ScriptKey,
 		group1ReissuedGroupKey,
@@ -209,24 +211,27 @@ func TestNewAssetCommitment(t *testing.T) {
 	for _, testCase := range testCases {
 		success := t.Run(testCase.name, func(t *testing.T) {
 			assets := testCase.f()
-			commitment, err := commitment.NewAssetCommitment(
+			testCommitment, err := commitment.NewAssetCommitment(
 				assets...,
 			)
 			require.ErrorIs(t, err, testCase.err)
-			if testCase.err == nil {
-				// Ensure that the Taproot Asset commitment was
-				// properly set: each asset is present and a
-				// proof can be generated for each asset.
-				require.NotZero(t, commitment.TapCommitmentKey())
+			if testCase.err != nil {
+				return
+			}
 
-				for _, a := range assets {
-					committedAsset, proof, err := commitment.AssetProof(
+			// Ensure that the Taproot Asset commitment was properly
+			// set: each asset is present and a proof can be
+			// generated for each asset.
+			require.NotZero(t, testCommitment.TapCommitmentKey())
+
+			for _, a := range assets {
+				committedAsset, proof, err :=
+					testCommitment.AssetProof(
 						a.AssetCommitmentKey(),
 					)
-					require.NoError(t, err)
-					require.NotNil(t, committedAsset)
-					require.NotNil(t, proof)
-				}
+				require.NoError(t, err)
+				require.NotNil(t, committedAsset)
+				require.NotNil(t, proof)
 			}
 		})
 		if !success {
@@ -239,8 +244,8 @@ func TestNewAssetCommitment(t *testing.T) {
 func TestMintTapCommitment(t *testing.T) {
 	t.Parallel()
 
-	genesisNormal := asset.RandGenesis(t, asset.Normal)
-	genesisCollectible := asset.RandGenesis(t, asset.Collectible)
+	genesisNormal := assetmock.RandGenesis(t, asset.Normal)
+	genesisCollectible := assetmock.RandGenesis(t, asset.Collectible)
 	pubKey := keychain.KeyDescriptor{
 		PubKey: test.RandPrivKey(t).PubKey(),
 	}
@@ -339,7 +344,7 @@ func TestMintTapCommitment(t *testing.T) {
 		},
 		{
 			name: "invalid asset type",
-			g:    asset.RandGenesis(t, asset.Type(255)),
+			g:    assetmock.RandGenesis(t, asset.Type(255)),
 			f: func() *commitment.AssetDetails {
 				return &commitment.AssetDetails{
 					Type:             asset.Type(255),
@@ -378,7 +383,7 @@ func TestMintTapCommitment(t *testing.T) {
 					trueAmt = &oneAmt
 				}
 
-				protoAsset := asset.NewAssetNoErr(
+				protoAsset := assetmock.NewAssetNoErr(
 					t, testCase.g, *trueAmt,
 					details.LockTime,
 					details.RelativeLockTime,
@@ -386,7 +391,7 @@ func TestMintTapCommitment(t *testing.T) {
 					nil,
 				)
 
-				groupKey := asset.RandGroupKey(
+				groupKey := assetmock.RandGroupKey(
 					t, testCase.g, protoAsset,
 				)
 
@@ -418,7 +423,7 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 	const numAssets = 5
 	var anchorDetails *commitment.AssetDetails
 
-	genesis1 := asset.RandGenesis(t, assetType)
+	genesis1 := assetmock.RandGenesis(t, assetType)
 	assetDetails := make([]*commitment.AssetDetails, 0, numAssets)
 	for i := 0; i < numAssets; i++ {
 		details := randAssetDetails(t, assetType)
@@ -428,13 +433,13 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 		}
 	}
 
-	genesis1ProtoAsset := asset.NewAssetNoErr(
+	genesis1ProtoAsset := assetmock.NewAssetNoErr(
 		t, genesis1, *anchorDetails.Amount, anchorDetails.LockTime,
 		anchorDetails.RelativeLockTime,
 		asset.NewScriptKeyBip86(anchorDetails.ScriptKey), nil,
 		asset.WithAssetVersion(anchorDetails.Version),
 	)
-	groupKey1 := asset.RandGroupKey(t, genesis1, genesis1ProtoAsset)
+	groupKey1 := assetmock.RandGroupKey(t, genesis1, genesis1ProtoAsset)
 
 	// Mint a new Taproot Asset commitment with the included assets.
 	mintCommitment, assets, err := commitment.Mint(
@@ -500,14 +505,14 @@ func TestMintAndDeriveTapCommitment(t *testing.T) {
 	// not included in the above Taproot Asset commitment (non-inclusion
 	// proofs). We'll reuse the same asset details, except we'll mint them
 	// with a distinct genesis and group key.
-	genesis2 := asset.RandGenesis(t, assetType)
-	genesis2ProtoAsset := asset.NewAssetNoErr(
+	genesis2 := assetmock.RandGenesis(t, assetType)
+	genesis2ProtoAsset := assetmock.NewAssetNoErr(
 		t, genesis2, *anchorDetails.Amount, anchorDetails.LockTime,
 		anchorDetails.RelativeLockTime,
 		asset.NewScriptKeyBip86(anchorDetails.ScriptKey), nil,
 		asset.WithAssetVersion(anchorDetails.Version),
 	)
-	groupKey2 := asset.RandGroupKey(t, genesis2, genesis2ProtoAsset)
+	groupKey2 := assetmock.RandGroupKey(t, genesis2, genesis2ProtoAsset)
 	_, nonExistentAssetGroup, err := commitment.Mint(
 		genesis2, groupKey2, assetDetails...,
 	)
@@ -521,14 +526,14 @@ func TestSplitCommitment(t *testing.T) {
 	t.Parallel()
 
 	outPoint := wire.OutPoint{}
-	genesisNormal := asset.RandGenesis(t, asset.Normal)
-	genesisCollectible := asset.RandGenesis(t, asset.Collectible)
+	genesisNormal := assetmock.RandGenesis(t, asset.Normal)
+	genesisCollectible := assetmock.RandGenesis(t, asset.Collectible)
 	normalProtoAsset := randAsset(t, genesisNormal, nil)
 	collectibleProtoAsset := randAsset(t, genesisCollectible, nil)
-	groupKeyNormal := asset.RandGroupKey(
+	groupKeyNormal := assetmock.RandGroupKey(
 		t, genesisNormal, normalProtoAsset,
 	)
-	groupKeyCollectible := asset.RandGroupKey(
+	groupKeyCollectible := assetmock.RandGroupKey(
 		t, genesisCollectible, collectibleProtoAsset,
 	)
 
@@ -556,13 +561,17 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisCollectible.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      input.Amount,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: input.Amount,
 				}, {
 					OutputIndex: 1,
 					AssetID:     genesisCollectible.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      input.Amount,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: input.Amount,
 				}}
 				return input, root, external
 			},
@@ -586,8 +595,10 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisCollectible.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      input.Amount,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: input.Amount,
 				}}
 				return input, root, external
 			},
@@ -643,14 +654,18 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      1,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: 1,
 				}, {
 
 					OutputIndex: 2,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      1,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: 1,
 				}}
 
 				return input, root, external
@@ -699,8 +714,10 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      2,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: 2,
 				}}
 
 				return input, root, external
@@ -728,8 +745,10 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      3,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: 3,
 				}}
 
 				return input, root, external
@@ -757,8 +776,10 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      0,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: 0,
 				}}
 
 				return input, root, external
@@ -784,8 +805,10 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      3,
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: 3,
 				}}
 
 				return input, root, external
@@ -819,13 +842,17 @@ func TestSplitCommitment(t *testing.T) {
 				external := []*commitment.SplitLocator{{
 					OutputIndex: 1,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      uint64(18446744073709551515),
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: uint64(18446744073709551515),
 				}, {
 					OutputIndex: 2,
 					AssetID:     genesisNormal.ID(),
-					ScriptKey:   asset.RandSerializedKey(t),
-					Amount:      uint64(103),
+					ScriptKey: assetmock.RandSerializedKey(
+						t,
+					),
+					Amount: uint64(103),
 				}}
 
 				return input, root, external
@@ -937,13 +964,13 @@ func TestTapCommitmentKeyPopulation(t *testing.T) {
 			assetType = asset.Collectible
 		}
 
-		genesis := asset.RandGenesis(t, assetType)
+		genesis := assetmock.RandGenesis(t, assetType)
 		a := randAsset(t, genesis, nil)
 
 		var groupKey *asset.GroupKey
 		if assetDesc.HasGroupKey {
-			groupKey = asset.RandGroupKey(t, genesis, a)
-			a = asset.NewAssetNoErr(
+			groupKey = assetmock.RandGroupKey(t, genesis, a)
+			a = assetmock.NewAssetNoErr(
 				t, genesis, a.Amount, a.LockTime,
 				a.RelativeLockTime, a.ScriptKey, groupKey,
 				asset.WithAssetVersion(a.Version),
@@ -973,33 +1000,33 @@ func TestTapCommitmentKeyPopulation(t *testing.T) {
 func TestUpdateAssetCommitment(t *testing.T) {
 	t.Parallel()
 
-	genesis1 := asset.RandGenesis(t, asset.Normal)
-	genesis2 := asset.RandGenesis(t, asset.Normal)
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
+	genesis2 := assetmock.RandGenesis(t, asset.Normal)
 	genesis1collect := genesis1
 	genesis1collect.Type = asset.Collectible
 	group1Anchor := randAsset(t, genesis1, nil)
-	groupKey1, group1PrivBytes := asset.RandGroupKeyWithSigner(
+	groupKey1, group1PrivBytes := assetmock.RandGroupKeyWithSigner(
 		t, genesis1, group1Anchor,
 	)
-	group1Anchor = asset.NewAssetNoErr(
+	group1Anchor = assetmock.NewAssetNoErr(
 		t, genesis1, group1Anchor.Amount, group1Anchor.LockTime,
 		group1Anchor.RelativeLockTime, group1Anchor.ScriptKey,
 		groupKey1, asset.WithAssetVersion(group1Anchor.Version),
 	)
 	group2Anchor := randAsset(t, genesis2, nil)
-	groupKey2 := asset.RandGroupKey(t, genesis2, group2Anchor)
+	groupKey2 := assetmock.RandGroupKey(t, genesis2, group2Anchor)
 	group1Reissued := randAsset(t, genesis2, nil)
-	genTxBuilder := asset.MockGroupTxBuilder{}
+	genTxBuilder := assetmock.MockGroupTxBuilder{}
 	group1Priv, group1Pub := btcec.PrivKeyFromBytes(group1PrivBytes)
-	group1ReissuedGroupReq := asset.NewGroupKeyRequestNoErr(
+	group1ReissuedGroupReq := assetmock.NewGroupKeyRequestNoErr(
 		t, test.PubToKeyDesc(group1Pub), genesis1, group1Reissued, nil,
 	)
 	group1ReissuedGroupKey, err := asset.DeriveGroupKey(
-		asset.NewMockGenesisSigner(group1Priv), &genTxBuilder,
+		assetmock.NewMockGenesisSigner(group1Priv), &genTxBuilder,
 		*group1ReissuedGroupReq,
 	)
 	require.NoError(t, err)
-	group1Reissued = asset.NewAssetNoErr(
+	group1Reissued = assetmock.NewAssetNoErr(
 		t, genesis2, group1Reissued.Amount, group1Reissued.LockTime,
 		group1Reissued.RelativeLockTime, group1Reissued.ScriptKey,
 		group1ReissuedGroupKey,
@@ -1123,26 +1150,26 @@ func TestUpdateTapCommitment(t *testing.T) {
 
 	// Create two assets with different geneses and groupKeys, to ensure
 	// they are not in the same AssetCommitment.
-	genesis1 := asset.RandGenesis(t, asset.Normal)
-	genesis2 := asset.RandGenesis(t, asset.Normal)
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
+	genesis2 := assetmock.RandGenesis(t, asset.Normal)
 	protoAsset1 := randAsset(t, genesis1, nil)
 	protoAsset2 := randAsset(t, genesis2, nil)
-	groupKey1 := asset.RandGroupKey(t, genesis1, protoAsset1)
-	groupKey2 := asset.RandGroupKey(t, genesis2, protoAsset2)
+	groupKey1 := assetmock.RandGroupKey(t, genesis1, protoAsset1)
+	groupKey2 := assetmock.RandGroupKey(t, genesis2, protoAsset2)
 
 	// We also create a thirds asset which is in the same group as the first
 	// one, to ensure that we can properly create Taproot Asset commitments
 	// from asset commitments of the same group.
-	genesis3 := asset.RandGenesis(t, asset.Normal)
+	genesis3 := assetmock.RandGenesis(t, asset.Normal)
 	asset3 := randAsset(t, genesis3, groupKey1)
 
-	asset1 := asset.NewAssetNoErr(
+	asset1 := assetmock.NewAssetNoErr(
 		t, genesis1, protoAsset1.Amount, protoAsset1.LockTime,
 		protoAsset1.RelativeLockTime, protoAsset1.ScriptKey, groupKey1,
 		asset.WithAssetVersion(protoAsset1.Version),
 	)
 
-	asset2 := asset.NewAssetNoErr(
+	asset2 := assetmock.NewAssetNoErr(
 		t, genesis2, protoAsset2.Amount, protoAsset2.LockTime,
 		protoAsset2.RelativeLockTime, protoAsset2.ScriptKey, groupKey2,
 		asset.WithAssetVersion(protoAsset2.Version),
@@ -1283,7 +1310,7 @@ func TestAssetCommitmentDeepCopy(t *testing.T) {
 	t.Parallel()
 
 	// First, we'll make a commitment with two random assets.
-	genesis := asset.RandGenesis(t, asset.Normal)
+	genesis := assetmock.RandGenesis(t, asset.Normal)
 	asset1 := randAsset(t, genesis, nil)
 	asset2 := randAsset(t, genesis, nil)
 
@@ -1311,19 +1338,19 @@ func TestTapCommitmentDeepCopy(t *testing.T) {
 
 	// Fist, we'll make two asset commitments with a random asset, then
 	// make a Taproot Asset commitment out of that.
-	genesis1 := asset.RandGenesis(t, asset.Normal)
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
 	protoAsset1 := randAsset(t, genesis1, nil)
-	groupKey1 := asset.RandGroupKey(t, genesis1, protoAsset1)
-	asset1 := asset.NewAssetNoErr(
+	groupKey1 := assetmock.RandGroupKey(t, genesis1, protoAsset1)
+	asset1 := assetmock.NewAssetNoErr(
 		t, genesis1, protoAsset1.Amount, protoAsset1.LockTime,
 		protoAsset1.RelativeLockTime, protoAsset1.ScriptKey, groupKey1,
 		asset.WithAssetVersion(protoAsset1.Version),
 	)
 
-	genesis2 := asset.RandGenesis(t, asset.Normal)
+	genesis2 := assetmock.RandGenesis(t, asset.Normal)
 	protoAsset2 := randAsset(t, genesis2, nil)
-	groupKey2 := asset.RandGroupKey(t, genesis2, protoAsset2)
-	asset2 := asset.NewAssetNoErr(
+	groupKey2 := assetmock.RandGroupKey(t, genesis2, protoAsset2)
+	asset2 := assetmock.NewAssetNoErr(
 		t, genesis2, protoAsset2.Amount, protoAsset2.LockTime,
 		protoAsset2.RelativeLockTime, protoAsset2.ScriptKey, groupKey2,
 		asset.WithAssetVersion(protoAsset2.Version),
@@ -1372,7 +1399,7 @@ func TestAssetCommitmentNoWitness(t *testing.T) {
 	t.Parallel()
 
 	// We'll start by generating a random asset.
-	genesis1 := asset.RandGenesis(t, asset.Normal)
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
 	asset1 := randAsset(t, genesis1, nil)
 
 	// We'll modify the asset version so it uses the segwit encoding for
@@ -1432,12 +1459,12 @@ func TestTapCommitmentUpsertMaxVersion(t *testing.T) {
 
 	// We'll start with a random asset. We'll make sure this asset is
 	// version 0.
-	genesis1 := asset.RandGenesis(t, asset.Normal)
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
 	asset1 := randAsset(t, genesis1, nil)
 	asset1.Version = asset.V0
 
 	// Next, we'll make another asset, this time with version 1.
-	genesis2 := asset.RandGenesis(t, asset.Normal)
+	genesis2 := assetmock.RandGenesis(t, asset.Normal)
 	asset2 := randAsset(t, genesis2, nil)
 	asset2.Version = asset.V1
 
@@ -1476,12 +1503,12 @@ func TestTapCommitmentDeleteMaxVersion(t *testing.T) {
 
 	// We'll start with a random asset. We'll make sure this asset is
 	// version 0.
-	genesis1 := asset.RandGenesis(t, asset.Normal)
+	genesis1 := assetmock.RandGenesis(t, asset.Normal)
 	asset1 := randAsset(t, genesis1, nil)
 	asset1.Version = asset.V0
 
 	// Next, we'll make another asset, this time with version 1.
-	genesis2 := asset.RandGenesis(t, asset.Normal)
+	genesis2 := assetmock.RandGenesis(t, asset.Normal)
 	asset2 := randAsset(t, genesis2, nil)
 	asset2.Version = asset.V1
 
@@ -1508,7 +1535,7 @@ func TestAssetCommitmentUpsertMaxVersion(t *testing.T) {
 
 	// We'll start with a random asset. We'll make sure this asset is
 	// version 0.
-	genesis := asset.RandGenesis(t, asset.Normal)
+	genesis := assetmock.RandGenesis(t, asset.Normal)
 	asset1 := randAsset(t, genesis, nil)
 	asset1.Version = asset.V0
 
@@ -1537,7 +1564,7 @@ func TestAssetCommitmentDeleteMaxVersion(t *testing.T) {
 
 	// We'll start with a random asset. We'll make sure this asset is
 	// version 0.
-	genesis := asset.RandGenesis(t, asset.Normal)
+	genesis := assetmock.RandGenesis(t, asset.Normal)
 	asset1 := randAsset(t, genesis, nil)
 	asset1.Version = asset.V0
 

@@ -9,8 +9,10 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/commitment"
+	assetmock "github.com/lightninglabs/taproot-assets/internal/mock/asset"
+	mssmtmock "github.com/lightninglabs/taproot-assets/internal/mock/mssmt"
 	"github.com/lightninglabs/taproot-assets/internal/test"
-	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/maps"
 )
@@ -22,21 +24,21 @@ func RandSplitCommit(t testing.TB, a asset.Asset) *asset.SplitCommitment {
 		return nil
 	}
 
-	rootLoc := SplitLocator{
+	rootLoc := commitment.SplitLocator{
 		OutputIndex: uint32(test.RandInt[int32]()),
-		AssetID:     asset.RandID(t),
+		AssetID:     assetmock.RandID(t),
 		Amount:      a.Amount / 2,
 		ScriptKey:   asset.ToSerialized(test.RandPubKey(t)),
 	}
-	splitLoc := SplitLocator{
+	splitLoc := commitment.SplitLocator{
 		OutputIndex: uint32(test.RandInt[int32]()),
-		AssetID:     asset.RandID(t),
+		AssetID:     assetmock.RandID(t),
 		Amount:      a.Amount / 2,
 		ScriptKey:   asset.ToSerialized(test.RandPubKey(t)),
 	}
 
-	split, err := NewSplitCommitment(
-		context.Background(), []SplitCommitmentInput{{
+	split, err := commitment.NewSplitCommitment(
+		context.Background(), []commitment.SplitCommitmentInput{{
 			Asset:    &a,
 			OutPoint: test.RandOp(t),
 		}}, &rootLoc, &splitLoc,
@@ -48,40 +50,48 @@ func RandSplitCommit(t testing.TB, a asset.Asset) *asset.SplitCommitment {
 	return assetSplit.SplitCommitment
 }
 
-func HexTapscriptSibling(t testing.TB, ts *TapscriptPreimage) string {
+func HexTapscriptSibling(t testing.TB,
+	ts *commitment.TapscriptPreimage) string {
+
 	if ts.IsEmpty() {
 		return ""
 	}
 
-	siblingBytes, _, err := MaybeEncodeTapscriptPreimage(ts)
+	siblingBytes, _, err := commitment.MaybeEncodeTapscriptPreimage(ts)
 	require.NoError(t, err)
 
 	return hex.EncodeToString(siblingBytes)
 }
 
-func ParseTapscriptSibling(t testing.TB, ts string) *TapscriptPreimage {
+func ParseTapscriptSibling(t testing.TB,
+	ts string) *commitment.TapscriptPreimage {
+
 	if ts == "" {
 		return nil
 	}
 
-	siblingHex, _, err := MaybeDecodeTapscriptPreimage(test.ParseHex(t, ts))
+	siblingHex, _, err := commitment.MaybeDecodeTapscriptPreimage(
+		test.ParseHex(t, ts),
+	)
 	require.NoError(t, err)
 
 	return siblingHex
 }
 
-func NewTestFromProof(t testing.TB, p *Proof) *TestProof {
+func NewTestFromProof(t testing.TB, p *commitment.Proof) *TestProof {
 	t.Helper()
 
 	tp := &TestProof{
 		TaprootAssetProof: &TestTaprootAssetProof{
-			Proof:   mssmt.HexProof(t, &p.TaprootAssetProof.Proof),
+			Proof: mssmtmock.HexProof(
+				t, &p.TaprootAssetProof.Proof,
+			),
 			Version: uint8(p.TaprootAssetProof.Version),
 		},
 	}
 	if p.AssetProof != nil {
 		tp.AssetProof = &TestAssetProof{
-			Proof:   mssmt.HexProof(t, &p.AssetProof.Proof),
+			Proof:   mssmtmock.HexProof(t, &p.AssetProof.Proof),
 			Version: uint8(p.AssetProof.Version),
 			TapKey:  hex.EncodeToString(p.AssetProof.TapKey[:]),
 		}
@@ -95,20 +105,20 @@ type TestProof struct {
 	TaprootAssetProof *TestTaprootAssetProof `json:"taproot_asset_proof"`
 }
 
-func (tp *TestProof) ToProof(t testing.TB) *Proof {
+func (tp *TestProof) ToProof(t testing.TB) *commitment.Proof {
 	t.Helper()
 
-	p := &Proof{
-		TaprootAssetProof: TaprootAssetProof{
-			Proof: mssmt.ParseProof(
+	p := &commitment.Proof{
+		TaprootAssetProof: commitment.TaprootAssetProof{
+			Proof: mssmtmock.ParseProof(
 				t, tp.TaprootAssetProof.Proof,
 			),
 			Version: asset.Version(tp.TaprootAssetProof.Version),
 		},
 	}
 	if tp.AssetProof != nil {
-		p.AssetProof = &AssetProof{
-			Proof:   mssmt.ParseProof(t, tp.AssetProof.Proof),
+		p.AssetProof = &commitment.AssetProof{
+			Proof:   mssmtmock.ParseProof(t, tp.AssetProof.Proof),
 			Version: asset.Version(tp.AssetProof.Version),
 		}
 		assetID, err := hex.DecodeString(tp.AssetProof.TapKey)
@@ -130,7 +140,7 @@ type TestTaprootAssetProof struct {
 	Version uint8  `json:"version"`
 }
 
-func NewTestFromSplitSet(t testing.TB, s SplitSet) TestSplitSet {
+func NewTestFromSplitSet(t testing.TB, s commitment.SplitSet) TestSplitSet {
 	t.Helper()
 
 	ts := make([]*TestSplitEntry, 0, len(s))
@@ -153,7 +163,7 @@ func NewTestFromSplitSet(t testing.TB, s SplitSet) TestSplitSet {
 				Amount: key.Amount,
 			},
 			Asset: &TestSplitAsset{
-				Asset: asset.NewTestFromAsset(
+				Asset: assetmock.NewTestFromAsset(
 					t, &s[key].Asset,
 				),
 				OutputIndex: s[key].OutputIndex,
@@ -166,13 +176,13 @@ func NewTestFromSplitSet(t testing.TB, s SplitSet) TestSplitSet {
 
 type TestSplitSet []*TestSplitEntry
 
-func (ts TestSplitSet) ToSplitSet(t testing.TB) SplitSet {
+func (ts TestSplitSet) ToSplitSet(t testing.TB) commitment.SplitSet {
 	t.Helper()
 
-	s := make(SplitSet, len(ts))
+	s := make(commitment.SplitSet, len(ts))
 	for idx := range ts {
 		e := ts[idx]
-		key := SplitLocator{
+		key := commitment.SplitLocator{
 			OutputIndex: e.Locator.OutputIndex,
 			AssetID:     test.Parse32Byte(t, e.Locator.AssetID),
 			ScriptKey:   test.Parse33Byte(t, e.Locator.ScriptKey),
@@ -182,13 +192,15 @@ func (ts TestSplitSet) ToSplitSet(t testing.TB) SplitSet {
 		// We'll allow empty assets here.
 		var (
 			parsedAsset asset.Asset
-			emptyAsset  = asset.NewTestFromAsset(t, &asset.Asset{})
+			emptyAsset  = assetmock.NewTestFromAsset(
+				t, &asset.Asset{},
+			)
 		)
 		if !reflect.DeepEqual(e.Asset.Asset, emptyAsset) {
 			parsedAsset = *e.Asset.Asset.ToAsset(t)
 		}
 
-		s[key] = &SplitAsset{
+		s[key] = &commitment.SplitAsset{
 			Asset:       parsedAsset,
 			OutputIndex: e.Asset.OutputIndex,
 		}
@@ -210,11 +222,11 @@ type TestSplitLocator struct {
 }
 
 type TestSplitAsset struct {
-	Asset       *asset.TestAsset `json:"asset"`
-	OutputIndex uint32           `json:"output_index"`
+	Asset       *assetmock.TestAsset `json:"asset"`
+	OutputIndex uint32               `json:"output_index"`
 }
 
-func NewTestFromInputSet(t testing.TB, i InputSet) TestInputSet {
+func NewTestFromInputSet(t testing.TB, i commitment.InputSet) TestInputSet {
 	t.Helper()
 
 	ts := make([]*TestInputEntry, 0, len(i))
@@ -230,8 +242,8 @@ func NewTestFromInputSet(t testing.TB, i InputSet) TestInputSet {
 	for keyIndex := range keys {
 		key := keys[keyIndex]
 		ts = append(ts, &TestInputEntry{
-			PrevID: asset.NewTestFromPrevID(&key),
-			Asset:  asset.NewTestFromAsset(t, i[key]),
+			PrevID: assetmock.NewTestFromPrevID(&key),
+			Asset:  assetmock.NewTestFromAsset(t, i[key]),
 		})
 	}
 
@@ -240,10 +252,10 @@ func NewTestFromInputSet(t testing.TB, i InputSet) TestInputSet {
 
 type TestInputSet []*TestInputEntry
 
-func (ts TestInputSet) ToInputSet(t testing.TB) InputSet {
+func (ts TestInputSet) ToInputSet(t testing.TB) commitment.InputSet {
 	t.Helper()
 
-	i := make(InputSet, len(ts))
+	i := make(commitment.InputSet, len(ts))
 	for idx := range ts {
 		e := ts[idx]
 		key := e.PrevID.ToPrevID(t)
@@ -254,6 +266,6 @@ func (ts TestInputSet) ToInputSet(t testing.TB) InputSet {
 }
 
 type TestInputEntry struct {
-	PrevID *asset.TestPrevID `json:"prev_id"`
-	Asset  *asset.TestAsset  `json:"asset"`
+	PrevID *assetmock.TestPrevID `json:"prev_id"`
+	Asset  *assetmock.TestAsset  `json:"asset"`
 }
