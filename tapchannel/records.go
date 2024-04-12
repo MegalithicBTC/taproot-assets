@@ -385,6 +385,13 @@ func (c *Commitment) Decode(r io.Reader) error {
 	return tlvStream.Decode(r)
 }
 
+// Bytes returns the serialized Commitment record.
+func (c *Commitment) Bytes() []byte {
+	var buf bytes.Buffer
+	_ = c.Encode(&buf)
+	return buf.Bytes()
+}
+
 // Leaves returns the auxiliary leaves that correspond to the commitment.
 func (c *Commitment) Leaves() lnwallet.CommitAuxLeaves {
 	leaves := lnwallet.CommitAuxLeaves{
