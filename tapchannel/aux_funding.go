@@ -11,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/fn"
 	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/lightninglabs/taproot-assets/proof"
@@ -20,95 +21,31 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
-const (
-	// TxAssetMsgType...
-	TxAssetMsgType lnwire.MessageType = 32769 // starts at 32768
-)
-
-// TxAssetProof...
-type TxAssetProof struct {
-	// TempChanID....
-	TempChanID tlv.RecordT[tlv.TlvType0, funding.PendingChanID]
-
-	// AssetID is the ID of the asset that this output is associated with.
-	AssetID tlv.RecordT[tlv.TlvType1, asset.ID]
-
-	// Amount is the amount of the asset that this output represents.
-	Amount tlv.RecordT[tlv.TlvType2, uint64]
-
-	// Proof is the last transition proof that proves this output was
-	// committed to in the Bitcoin transaction that anchors this asset
-	// output.
-	//
-	// TODO(roasbeef): will have a challenge witness proves, that sender is
-	// able to do the state transition
-	Proof tlv.RecordT[tlv.TlvType3, proof.Proof]
-
-	// End is a boolean that indicates that this is the last message in the
-	// series. After this, the receiver knows to attempt to compute the
-	// final funding asset root.
-	End tlv.RecordT[tlv.TlvType4, bool]
-}
-
-// MsgType returns the type of the message.
-func (t *TxAssetProof) MsgType() lnwire.MessageType {
-	return TxAssetMsgType
-}
-
-// Decode reads the bytes stream and converts it to the object.
-func (t *TxAssetProof) Decode(r io.Reader, _ uint32) error {
-	stream, err := tlv.NewStream(
-		t.TempChanID.Record(),
-		t.AssetID.Record(),
-		t.Amount.Record(),
-		t.Proof.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Decode(r)
-}
-
-// Encode converts object to the bytes stream and write it into the
-// write buffer.
-func (t *TxAssetProof) Encode(w *bytes.Buffer, _ uint32) error {
-	stream, err := tlv.NewStream(
-		t.TempChanID.Record(),
-		t.AssetID.Record(),
-		t.Amount.Record(),
-		t.Proof.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// ErrorReporter...
+// ErrorReporter is used to report an error back to the caller and/or peer that
+// we're communiating with.
 type ErrorReporter interface {
 	// ReportError reports an error that occurred during the funding
 	// process.
 	ReportError(pid funding.PendingChanID, err error)
 }
 
-// FundingControllerCfg...
+// FundingControllerCfg is a configuration struct that houses the necessary
+// abstractions needed to drive funding.
 type FundingControllerCfg struct {
-	// HeaderVerifier...
+	// HeaderVerifier is used to verify headers in a proof.
 	HeaderVerifier proof.HeaderVerifier
 
-	// GroupVerifier...
+	// GroupVerifier is used to verify group keys in a proof.
 	GroupVerifier proof.GroupVerifier
 
-	// ErrReporter...
+	// ErrReporter is used to report errors back to the caller and/or peer.
 	ErrReporter ErrorReporter
-
-	// TODO(roasbeef): report error similar to other?
 }
 
-// fundingReq...
-type fundingReq struct {
+// bindFundingReq is a request to bind a pending channel ID to a complete aux
+// funding desc. This is used by the initiator+responder after the pre funding messages
+// and interaction is compelte.
+type bindFundingReq struct {
 	initiator bool
 
 	tempPID funding.PendingChanID
@@ -116,7 +53,8 @@ type fundingReq struct {
 	resp chan fn.Option[lnwallet.AuxFundingDesc]
 }
 
-// FundingController...
+// FundingController is used to drive TAP aware channel funding using a backing
+// lnd node and an active connection to a tapd instance.
 type FundingController struct {
 	started atomic.Bool
 	stopped atomic.Bool
@@ -125,7 +63,7 @@ type FundingController struct {
 
 	msgs chan lnwire.Message
 
-	fundingReqs chan *fundingReq
+	bindFundingReqs chan *bindFundingReq
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -133,16 +71,17 @@ type FundingController struct {
 
 // TODO(roasbeef): will use ProveAssetOwnership
 
-// NewFundingController...
-func NewFundingController() *FundingController {
+// NewFundingController creates a new instance of the FundingController.
+func NewFundingController(cfg FundingControllerCfg) *FundingController {
 	return &FundingController{
-		msgs:        make(chan lnwire.Message, 10),
-		fundingReqs: make(chan *fundingReq, 10),
-		quit:        make(chan struct{}),
+		cfg:             cfg,
+		msgs:            make(chan lnwire.Message, 10),
+		bindFundingReqs: make(chan *bindFundingReq, 10),
+		quit:            make(chan struct{}),
 	}
 }
 
-// Start...
+// Start starts the funding controller.
 func (f *FundingController) Start() error {
 	if !f.started.CompareAndSwap(false, true) {
 		return nil
@@ -154,7 +93,7 @@ func (f *FundingController) Start() error {
 	return nil
 }
 
-// Stop...
+// Stop stops the funding controller.
 func (f *FundingController) Stop() error {
 	if !f.started.CompareAndSwap(true, false) {
 		return nil
@@ -163,6 +102,7 @@ func (f *FundingController) Stop() error {
 	return nil
 }
 
+// newPendingChanID generates a new pending channel ID using a CSPRG.
 func newPendingChanID() (funding.PendingChanID, error) {
 	var id funding.PendingChanID
 	if _, err := io.ReadFull(crand.Reader, id[:]); err != nil {
@@ -172,7 +112,8 @@ func newPendingChanID() (funding.PendingChanID, error) {
 	return id, nil
 }
 
-// pendingAssetFunding...
+// pendingAssetFunding represents all the state needed to keep track of a
+// pending asset channel funding flow.o
 type pendingAssetFunding struct {
 	pid funding.PendingChanID
 
@@ -188,6 +129,183 @@ type pendingAssetFunding struct {
 	fundingRoot *mssmt.BranchNode
 }
 
+// addProof adds a new proof to the set of proofs that'll be used to fund the
+// new channel.
+func (p *pendingAssetFunding) addProof(proof proof.Proof) {
+	p.proofs = append(p.proofs, proof)
+}
+
+// assetRootFromInputs computes the asset root from the set of inputs provided.
+// This'll be used to idetnify the set of assets that'll be used as funding
+// inputs into the channel.
+func assetRootFromInputs(inputs []proof.Proof) (*mssmt.BranchNode, error) {
+	ctxb := context.Background()
+
+	// Insert all the assets into a new SMT that'll commit to all the
+	// assets we plan to use as input to funding.
+	fundingTree := mssmt.NewCompactedTree(mssmt.NewDefaultStore())
+	for _, proof := range inputs {
+		assetInput := proof.Asset
+
+		assetKey := assetInput.AssetCommitmentKey()
+		assetLeaf, err := assetInput.Leaf()
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = fundingTree.Insert(ctxb, assetKey, assetLeaf)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// With all the items inserted, we can now compute the root that'll be
+	// used to identity this input set.
+	return fundingTree.Root(context.Background())
+}
+
+// bindFundingRoot binds the funding root to the pending channel ID. Once
+// bound, the pre funding process is complete, and as the responder, we're now
+// ready for the next phase of the funding flow.
+func (p *pendingAssetFunding) bindFundingRoot() error {
+	fundingRoot, err := assetRootFromInputs(p.proofs)
+	if err != nil {
+		return fmt.Errorf("error computing asset root: %v", err)
+	}
+
+	p.fundingRoot = fundingRoot
+
+	return nil
+}
+
+// assetOutputs returns the set of asset outputs that'll be used to fund the
+// new asset channel.
+func (p *pendingAssetFunding) assetOutputs() []*AssetOutput {
+	return fn.Map(p.proofs, func(p proof.Proof) *AssetOutput {
+		return &AssetOutput{
+			AssetID: tlv.NewRecordT[tlv.TlvType0](
+				p.Asset.ID(),
+			),
+			Amount: tlv.NewPrimitiveRecord[tlv.TlvType1](
+				p.Asset.Amount,
+			),
+			Proof: tlv.NewRecordT[tlv.TlvType2](p),
+		}
+	})
+}
+
+// newCommitBlob creates a new commitment blob that'll be stored in the channel
+// state for the specified party.
+func newCommitBlob(chanAssets assetOutputListRecord,
+	local bool) ([]byte, error) {
+
+	var commit Commitment
+	if local {
+		commit.LocalAssets = tlv.NewRecordT[tlv.TlvType0](
+			chanAssets,
+		)
+	} else {
+		commit.RemoteAssets = tlv.NewRecordT[tlv.TlvType1](
+			chanAssets,
+		)
+	}
+
+	var b bytes.Buffer
+	err := commit.Encode(&b)
+	if err != nil {
+		return nil, err
+	}
+
+	return b.Bytes(), nil
+}
+
+// toAuxFundingDesc converts the pending asset funding into a full aux funding
+// desc. This is the final step in the modified funding process, as after this,
+// both sides are able to construct the funding output, and will be able to
+// store the appropriate funding blobs.
+func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
+) (*lnwallet.AuxFundingDesc, error) {
+
+	var fundingDesc lnwallet.AuxFundingDesc
+
+	// First, we'll map all the assets into asset outputs that'll be stored
+	// in the open channel struct on the lnd side.
+	assetOutputs := p.assetOutputs()
+
+	// With all the outputs assembled, we'll now map that to the open
+	// channel wrapper that'll go in the set of TLV blobs.
+	openChanDesc := NewOpenChannel(assetOutputs)
+
+	// Now we'll encode the 3 TLV blobs that lnd will store: the main one
+	// for the funding details, and then the blobs for the local and remote
+	// commitment
+	fundingDesc.CustomFundingBlob = openChanDesc.Bytes()
+
+	commitAssets := assetOutputListRecord{
+		outputs: assetOutputs,
+	}
+
+	// Encode the commitment blobs for both the local and remote party.
+	// This will be the information for the very first state (state 0).
+	var err error
+	fundingDesc.CustomLocalCommitBlob, err = newCommitBlob(
+		commitAssets, p.initiator,
+	)
+	if err != nil {
+		return nil, err
+	}
+	fundingDesc.CustomRemoteCommitBlob, err = newCommitBlob(
+		commitAssets, !p.initiator,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the TAP level tapscript tree for the funding output. This'll
+	// be a simply OP_TRUE output, meaning we need no extra signatures for
+	// a valid commitment.
+	fundingScriptTree := NewFundingScriptTree()
+
+	// With all the blobs set, we'll now derive the tapscsript root that
+	// will commit to all the assets in the channel.
+	//
+	// TODO(roasbeef): assumes no group key
+	fundingAsset := assetOutputs[0].Proof.Val.Asset.Copy()
+	fundingAsset.Amount = p.amt
+	fundingAsset.SplitCommitmentRoot = nil
+
+	// TODO(roasbeef): need to sign all inputs
+	fundingWitness := fn.Map(p.proofs, func(p proof.Proof) asset.Witness {
+		return asset.Witness{
+			PrevID: &asset.PrevID{
+				OutPoint: p.OutPoint(),
+				ID:       p.Asset.ID(),
+				ScriptKey: asset.ToSerialized(
+					p.Asset.ScriptKey.PubKey,
+				),
+			},
+		}
+	})
+	fundingAsset.PrevWitnesses = fundingWitness
+
+	// The output script key for the funding output will be just the
+	// OP_TRUE script-only output key.
+	fundingAsset.ScriptKey = asset.ScriptKey{
+		PubKey: fundingScriptTree.TaprootKey,
+	}
+
+	// Finally, we'll derive the tapscript root that'll commit to the new
+	// funding asset output we created above.
+	tapCommitment, err := commitment.FromAssets(fundingAsset)
+	if err != nil {
+		return nil, err
+	}
+	fundingDesc.TapscriptRoot = tapCommitment.TapscriptRoot(nil)
+
+	return &fundingDesc, nil
+}
+
+// msgToAssetProof converts a wire message to a TxAssetProof.
 func msgToAssetProof(msg lnwire.Message) (*TxAssetProof, error) {
 	switch msg := msg.(type) {
 	case *lnwire.Custom:
@@ -210,11 +328,39 @@ func msgToAssetProof(msg lnwire.Message) (*TxAssetProof, error) {
 // TODO(roasbeef): interface also needs method to pass in amt+asset ID, then
 // send out proofs to other side
 
-// chanFunder...
+// fundingFlowIndex is a map from pending channel ID to the current state of
+// the funding flow.
+type fundingFlowIndex map[funding.PendingChanID]*pendingAssetFunding
+
+// fromMsg attempts to match an incoming message to the pending funding flow,
+// and extracts the asset proof from the message.
+func (f *fundingFlowIndex) fromMsg(msg lnwire.Message) (*TxAssetProof, *pendingAssetFunding) {
+	assetProof, _ := msgToAssetProof(msg)
+
+	assetID := assetProof.AssetID.Val
+	tempPID := assetProof.TempChanID.Val
+
+	// Next, we'll see if this is already part of an active
+	// funding flow. If not, then we'll make a new one to
+	// accumulate this new proof.
+	assetFunding, ok := (*f)[tempPID]
+	if !ok {
+		assetFunding = &pendingAssetFunding{
+			pid:     assetProof.TempChanID.Val,
+			assetID: assetID,
+			amt:     assetProof.Amount.Val,
+		}
+	}
+
+	return assetProof, assetFunding
+}
+
+// chanFunder is the main event loop that controls the asset specific portions
+// of the funding request.
 func (f *FundingController) chanFunder() {
 	defer f.wg.Done()
 
-	fundingFlows := make(map[funding.PendingChanID]*pendingAssetFunding)
+	fundingFlows := make(fundingFlowIndex)
 
 	for {
 		select {
@@ -225,33 +371,17 @@ func (f *FundingController) chanFunder() {
 			// A new proof message has just come in, so we'll
 			// extract the real proof wire message from the opaque
 			// message.
-			assetProof, _ := msgToAssetProof(msg)
+			assetProof, assetFunding := fundingFlows.fromMsg(msg)
 
-			assetID := assetProof.AssetID.Val
 			tempPID := assetProof.TempChanID.Val
-
-			// Next, we'll see if this is already part of an active
-			// funding flow. If not, then we'll make a new one to
-			// accumulate this new proof.
-			assetFunding, ok := fundingFlows[tempPID]
-			if !ok {
-				assetFunding = &pendingAssetFunding{
-					pid:     assetProof.TempChanID.Val,
-					assetID: assetID,
-					amt:     assetProof.Amount.Val,
-				}
-			}
-
-			ctxb := context.Background()
 
 			// TODO(rosabeef): verify that has challenge witness
 			// before?
 
-			// TODO(roasbeef): pass thru context as well?
-
 			// Next, we'll validate this proof to make sure that
 			// the initiator is actually able to spend these
 			// outputs in the funding transaction.
+			ctxb := context.Background()
 			_, err := assetProof.Proof.Val.Verify(
 				ctxb, nil, f.cfg.HeaderVerifier,
 				proof.DefaultMerkleVerifier,
@@ -266,9 +396,7 @@ func (f *FundingController) chanFunder() {
 
 			// Now that we know the proof is valid, we'll add it to
 			// the funding state.
-			assetFunding.proofs = append(
-				assetFunding.proofs, assetProof.Proof.Val,
-			)
+			assetFunding.addProof(assetProof.Proof.Val)
 
 			// If this is the final funding proof, then we're done
 			// here, and we can assemble the funding asset root
@@ -277,128 +405,39 @@ func (f *FundingController) chanFunder() {
 				continue
 			}
 
-			fundingTree := mssmt.NewCompactedTree(
-				mssmt.NewDefaultStore(),
-			)
-			for _, proof := range assetFunding.proofs {
-				assetInput := proof.Asset
-
-				assetKey := assetInput.AssetCommitmentKey()
-				assetLeaf, err := assetInput.Leaf()
-				if err != nil {
-					fmt.Println(err)
-				}
-
-				_, err = fundingTree.Insert(
-					ctxb, assetKey, assetLeaf,
-				)
-				if err != nil {
-					fmt.Println(err)
-				}
+			if err := assetFunding.bindFundingRoot(); err != nil {
+				fErr := fmt.Errorf("unable to bind funding root: "+
+					"%w", err)
+				f.cfg.ErrReporter.ReportError(tempPID, fErr)
+				continue
 			}
-
-			// With all the items inserted, we can now compute the
-			// root that'll be used to identity this input set.
-			fundingRoot, err := fundingTree.Root(ctxb)
-			if err != nil {
-				fmt.Println(err)
-			}
-
-			assetFunding.fundingRoot = fundingRoot
 
 		// A new request to map a pending channel ID to a complete aux
 		// funding desc has just arrived. If we know of the pid, then
 		// we'll assemble the full desc now. Otherwise, we return None.
-		case req := <-f.fundingReqs:
+		case req := <-f.bindFundingReqs:
 			tempPID := req.tempPID
 
+			// If there's no funding flow for this tempPID, then we
+			// have nothing to return.
 			fundingFlow, ok := fundingFlows[tempPID]
 			if !ok {
 				req.resp <- fn.None[lnwallet.AuxFundingDesc]()
 			}
 
-			var fundingDesc lnwallet.AuxFundingDesc
+			// TODO(roasbeef): result type here?
 
-			// First, we'll map all the assets into asset outputs
-			// that'll be stored in the open channel struct on the
-			// lnd side.
-			assetOutputs := fn.Map(fundingFlow.proofs, func(p proof.Proof) *AssetOutput {
-				return &AssetOutput{
-					AssetID: tlv.NewRecordT[tlv.TlvType0](
-						p.Asset.ID(),
-					),
-					Amount: tlv.NewPrimitiveRecord[tlv.TlvType1](
-						p.Asset.Amount,
-					),
-					Proof: tlv.NewRecordT[tlv.TlvType2](p),
-				}
-			})
-
-			// With all the outputs assembled, we'll now map that
-			// to the open channel wrapper that'll go in the set of
-			// TLV blobs.
-			openChanDesc := NewOpenChannel(assetOutputs)
-
-			// Now we'll encode the 3 TLV blobs that lnd will
-			// store: the main one for the funding details, and
-			// then the blobs for the local and remote commitment
-			var fundB bytes.Buffer
-			_ = openChanDesc.Encode(&fundB)
-			fundingDesc.CustomFundingBlob = fundB.Bytes()
-
-			// TODO(roasbeef): need to know if we're the initiator
-			// or not?
-
-			var localCommitB, remoteCommitB bytes.Buffer
-			commitAssets := assetOutputListRecord{
-				outputs: assetOutputs,
+			fundingDesc, err := fundingFlow.toAuxFundingDesc(
+				req.initiator,
+			)
+			if err != nil {
+				fErr := fmt.Errorf("unable to create aux funding "+
+					"desc: %w", err)
+				f.cfg.ErrReporter.ReportError(tempPID, fErr)
+				continue
 			}
 
-			localCommit := Commitment{
-				LocalAssets: tlv.NewRecordT[tlv.TlvType0](
-					commitAssets,
-				),
-			}
-
-			localCommit.Encode(&localCommitB)
-			fundingDesc.CustomLocalCommitBlob = localCommitB.Bytes()
-
-			remoteCommit := Commitment{
-				RemoteAssets: tlv.NewRecordT[tlv.TlvType1](
-					commitAssets,
-				),
-			}
-
-			remoteCommit.Encode(&remoteCommitB)
-			fundingDesc.CustomRemoteCommitBlob = remoteCommitB.Bytes()
-
-			// With all the blobs set, we'll now derive the
-			// tapscsript root that will commit to all the assets
-			// in the channel.
-			//
-			// TODO(roasbeef): assumes no group key
-			fundingAsset := assetOutputs[0].Proof.Val.Asset.Copy()
-			fundingAsset.Amount = fundingFlow.amt
-			fundingAsset.SplitCommitmentRoot = nil
-			fundingAsset.PrevWitnesses = fn.Map(fundingFlow.proofs, func(p proof.Proof) asset.Witness {
-				return asset.Witness{
-					PrevID: &asset.PrevID{
-						OutPoint: p.OutPoint(),
-						ID:       p.Asset.ID(),
-						ScriptKey: asset.ToSerialized(
-							p.Asset.ScriptKey.PubKey,
-						),
-					},
-				}
-			})
-
-			fundingScriptTree := NewFundingScriptTree()
-
-			fundingAsset.ScriptKey = asset.ScriptKey{
-				PubKey: fundingScriptTree.InternalKey,
-			}
-
-			req.resp <- fn.Some(fundingDesc)
+			req.resp <- fn.Some(*fundingDesc)
 
 		case <-f.quit:
 			return
@@ -421,13 +460,13 @@ func (f *FundingController) FundChannel(peerPub btcec.PublicKey,
 func (f *FundingController) DescFromPendingChanID(pid funding.PendingChanID,
 	initiator bool) fn.Option[lnwallet.AuxFundingDesc] {
 
-	req := &fundingReq{
+	req := &bindFundingReq{
 		tempPID:   pid,
 		initiator: initiator,
 		resp:      make(chan fn.Option[lnwallet.AuxFundingDesc], 1),
 	}
 
-	if !fn.SendOrQuit(f.fundingReqs, req, f.quit) {
+	if !fn.SendOrQuit(f.bindFundingReqs, req, f.quit) {
 		return fn.None[lnwallet.AuxFundingDesc]()
 	}
 
