@@ -430,6 +430,25 @@ func (p *Proof) Decode(r io.Reader) error {
 	return stream.Decode(r)
 }
 
+// Record returns a TLV record that can be used to encode/decode a Proof to/from
+// a TLV stream.
+//
+// NOTE: This is part of the tlv.RecordProducer interface.
+func (p *Proof) Record() tlv.Record {
+	sizeFunc := func() uint64 {
+		var buf bytes.Buffer
+		err := p.Encode(&buf)
+		if err != nil {
+			panic(err)
+		}
+		return uint64(len(buf.Bytes()))
+	}
+
+	// Note that we set the type here as zero, as when used with a
+	// tlv.RecordT, the type param will be used as the type.
+	return tlv.MakeDynamicRecord(0, p, sizeFunc, Encoder, Decoder)
+}
+
 // IsUnknownVersion returns true if a proof has a version that is not recognized
 // by this implementation of tap.
 func (p *Proof) IsUnknownVersion() bool {

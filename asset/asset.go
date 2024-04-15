@@ -193,6 +193,18 @@ func (i ID) String() string {
 	return hex.EncodeToString(i[:])
 }
 
+// Record returns a TLV record that can be used to encode/decode an ID to/from a
+// TLV stream.
+//
+// NOTE: This is part of the tlv.RecordProducer interface.
+func (i *ID) Record() tlv.Record {
+	const recordSize = sha256.Size
+
+	// Note that we set the type here as zero, as when used with a
+	// tlv.RecordT, the type param will be used as the type.
+	return tlv.MakeStaticRecord(0, i, recordSize, IDEncoder, IDDecoder)
+}
+
 // ID computes an asset's unique identifier from its metadata.
 func (g Genesis) ID() ID {
 	tagHash := g.TagHash()
