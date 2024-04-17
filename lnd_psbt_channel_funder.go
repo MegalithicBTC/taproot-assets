@@ -58,6 +58,7 @@ func (a *assetChanIntent) BindPsbt(ctx context.Context, finalPSBT *psbt.Packet) 
 				PsbtVerify: &lnrpc.FundingPsbtVerify{
 					PendingChanId: a.tempPID[:],
 					FundedPsbt:    psbtBuf.Bytes(),
+					SkipFinalize:  true,
 				},
 			},
 		},
@@ -77,8 +78,12 @@ func (l *LndPbstChannelFunder) OpenChannel(ctx context.Context,
 	req tapchannel.OpenChanReq) (tapchannel.AssetChanIntent, error) {
 
 	var psbtBuf bytes.Buffer
-	if err := req.PsbtTemplate.Serialize(&psbtBuf); err != nil {
-		return nil, fmt.Errorf("unable to serialize base PSBT: %w", err)
+	if req.PsbtTemplate != nil {
+		err := req.PsbtTemplate.Serialize(&psbtBuf)
+		if err != nil {
+			return nil, fmt.Errorf("unable to serialize base "+
+				"PSBT: %w", err)
+		}
 	}
 
 	// We'll map our high level params into a request for a: private,
