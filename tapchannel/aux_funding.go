@@ -9,11 +9,13 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
@@ -21,14 +23,22 @@ import (
 	"github.com/lightninglabs/taproot-assets/mssmt"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tapfreighter"
+	"github.com/lightninglabs/taproot-assets/tapgarden"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
+)
+
+var (
+	// p2trChangeType is the type of change address that should be used for
+	// funding PSBTs, as we'll always want to use P2TR change addresses.
+	p2trChangeType = walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
 )
 
 // ErrorReporter is used to report an error back to the caller and/or peer that
@@ -49,20 +59,21 @@ type PeerMessenger interface {
 // OpenChanReq is a request to open a new asset channel with a remote peer.
 type OpenChanReq struct {
 	// ChanAmt is the amount of BTC to put into the channel. Some BTC is
-	// required atm to pay on chain fees for the channel. Note that additional
-	// fees can be added in the event of a force close by using CPFP with the
-	// channel anchor outputs.
+	// required atm to pay on chain fees for the channel. Note that
+	// additional fees can be added in the event of a force close by using
+	// CPFP with the channel anchor outputs.
 	ChanAmt btcutil.Amount
 
-	// PeerPub is the identity public key of the remote peer we wish to open
-	// the channel with.
+	// PeerPub is the identity public key of the remote peer we wish to
+	// open the channel with.
 	PeerPub btcec.PublicKey
 
 	// TempPID is the temporary channel ID to use for this channel.
 	TempPID funding.PendingChanID
 
-	// PsbtTemplate is the PSBT template that we'll use to fund the channel.
-	// This should already have all the inputs spending asset UTXOs added.
+	// PsbtTemplate is the PSBT template that we'll use to fund the
+	// channel.  This should already have all the inputs spending asset
+	// UTXOs added.
 	PsbtTemplate *psbt.Packet
 }
 
@@ -81,7 +92,7 @@ type AssetChanIntent interface {
 	// that'll properly open the channel once broadcaster.
 	//
 	// TODO(roasbeef): calls PsbtVerify under the hood
-	BindPsbt(*psbt.Packet) error
+	BindPsbt(context.Context, *psbt.Packet) error
 }
 
 // PsbtChannelFunder is an interface that abstracts the necessary steps needed
@@ -96,7 +107,7 @@ type PsbtChannelFunder interface {
 	// signed+broadcast.
 	//
 	// TODOD(roasbeef): always private chan by default
-	OpenChannel(OpenChanReq) (AssetChanIntent, error)
+	OpenChannel(context.Context, OpenChanReq) (AssetChanIntent, error)
 }
 
 // TxPublisher is an interface used to publish transactions.
@@ -138,6 +149,10 @@ type FundingControllerCfg struct {
 
 	// TxPublisher is used to publish transactions.
 	TxPublisher TxPublisher
+
+	// ChainWallet is the wallet that we'll use to handle the chain
+	// specific
+	ChainWallet tapgarden.WalletAnchor
 }
 
 // bindFundingReq is a request to bind a pending channel ID to a complete aux
@@ -232,6 +247,8 @@ type pendingAssetFunding struct {
 	fundingRoot *mssmt.BranchNode
 
 	feeRate chainfee.SatPerVByte
+
+	lockedInputs []wire.OutPoint
 }
 
 // addProof adds a new proof to the set of proofs that'll be used to fund the
@@ -288,12 +305,14 @@ func (p *pendingAssetFunding) bindFundingRoot() error {
 func (p *pendingAssetFunding) assetOutputs() []*AssetOutput {
 	return fn.Map(p.proofs, func(p *proof.Proof) *AssetOutput {
 		return &AssetOutput{
-			AssetID: tlv.NewRecordT[tlv.TlvType0](
-				p.Asset.ID(),
-			),
-			Amount: tlv.NewPrimitiveRecord[tlv.TlvType1](
-				p.Asset.Amount,
-			),
+			AssetBalance: AssetBalance{
+				AssetID: tlv.NewRecordT[tlv.TlvType0](
+					p.Asset.ID(),
+				),
+				Amount: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					p.Asset.Amount,
+				),
+			},
 			Proof: tlv.NewRecordT[tlv.TlvType2](*p),
 		}
 	})
@@ -410,6 +429,21 @@ func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
 	return &fundingDesc, nil
 }
 
+// unlockInputs unlocks any inputs that were locked during the funding process.
+func (p *pendingAssetFunding) unlockInputs(ctx context.Context,
+	wallet tapgarden.WalletAnchor) error {
+
+	for _, outpoint := range p.lockedInputs {
+		if err := wallet.UnlockInput(ctx, outpoint); err != nil {
+			return fmt.Errorf("unable to unlock outpoint %v: %v",
+				outpoint, err)
+		}
+
+	}
+
+	return nil
+}
+
 // msgToAssetProof converts a wire message to a TxAssetProof.
 func msgToAssetProof(msg lnwire.Message) (*TxAssetProof, error) {
 	switch msg := msg.(type) {
@@ -429,9 +463,6 @@ func msgToAssetProof(msg lnwire.Message) (*TxAssetProof, error) {
 		panic("u wot m8?")
 	}
 }
-
-// TODO(roasbeef): interface also needs method to pass in amt+asset ID, then
-// send out proofs to other side
 
 // fundingFlowIndex is a map from pending channel ID to the current state of
 // the funding flow.
@@ -554,6 +585,133 @@ func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 	return nil
 }
 
+// fundPsbt takes our PSBT anchor template and has lnd fund the PSBT with
+// enough inputs and a proper change output.
+func (f *FundingController) fundPsbt(
+	ctx context.Context, psbtPkt *psbt.Packet,
+	feeRate chainfee.SatPerKWeight) (*tapsend.FundedPsbt, error) {
+
+	// We set the change index to be the 3rd output. We could instead have
+	// it be the second output, but that would mingle lnd's funds with
+	// outputs that mainly store assets.
+	changeIndex := 2
+	return f.cfg.ChainWallet.FundPsbt(
+		ctx, psbtPkt, 1, feeRate, changeIndex,
+	)
+}
+
+// signAllVPackets takes the funding vPSBT, signs all the explicit transfer,
+// and then derives all the passive transfers that also needs to be signed, and
+// then signs those. A single slice of all the passive and active assets signed
+// is returned.
+func (f *FundingController) signAllVPackets(ctx context.Context,
+	fundingVpkt *tapfreighter.FundedVPacket) ([]*tappsbt.VPacket, error) {
+
+	activePkt := fundingVpkt.VPacket
+	_, err := f.cfg.AssetWallet.SignVirtualPacket(activePkt)
+	if err != nil {
+		return nil, fmt.Errorf("unable to sign and commit "+
+			"virtual packet: %w", err)
+	}
+
+	passivePkts, err := f.cfg.AssetWallet.CreatePassiveAssets(
+		ctx, []*tappsbt.VPacket{activePkt},
+		fundingVpkt.InputCommitments,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create passive "+
+			"assets: %w", err)
+	}
+	err = f.cfg.AssetWallet.SignPassiveAssets(passivePkts)
+	if err != nil {
+		return nil, fmt.Errorf("unable to sign passive assets: %w", err)
+	}
+
+	allPackets := append([]*tappsbt.VPacket{}, activePkt)
+	allPackets = append(allPackets, passivePkts...)
+
+	return allPackets, nil
+}
+
+// anchorVPackets anchors the vPackets to the funding PSBT, creating a
+// complete, but unsigned PSBT packet that can be used to create out asset
+// channel.
+func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
+	allPackets []*tappsbt.VPacket) error {
+
+	// Given the set of vPackets we've created, we'll now now merge them
+	// all to create a map from output index to final tap commitment.
+	outputCommitments, err := tapsend.CreateOutputCommitments(allPackets)
+	if err != nil {
+		return fmt.Errorf("unable to create new output "+
+			"commitments: %w", err)
+	}
+
+	// Now that we know all the output commitments, we can modify the
+	// Bitcoin PSBT to have the proper pkScript that commits to the newly
+	// anchored assets.
+	for _, vPkt := range allPackets {
+		err = tapsend.UpdateTaprootOutputKeys(
+			fundedPkt.Pkt, vPkt, outputCommitments,
+		)
+		if err != nil {
+			return fmt.Errorf("error updating taproot output "+
+				"keys: %w", err)
+		}
+	}
+
+	// We're done creating the output commitments, we can now create the
+	// transition proof suffixes. This'll be the new proof we submit to
+	// relevant universe (or not) to update the new resting place of
+	// these assets.
+	for idx := range allPackets {
+		vPkt := allPackets[idx]
+
+		for vOutIdx := range vPkt.Outputs {
+			proofSuffix, err := tapsend.CreateProofSuffix(
+				fundedPkt.Pkt.UnsignedTx, fundedPkt.Pkt.Outputs,
+				vPkt, outputCommitments, vOutIdx, allPackets,
+			)
+			if err != nil {
+				return fmt.Errorf("unable to create proof "+
+					"suffix for output %d of vPSBT %d: %w",
+					vOutIdx, idx, err)
+			}
+
+			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
+		}
+	}
+
+	return nil
+}
+
+// signAndFinalizePsbt signs and finalizes the PSBT, then returns the finalized
+// transaction, but only after sanity checks pass.
+func (f *FundingController) signAndFinalizePsbt(ctx context.Context,
+	pkt *psbt.Packet) (*wire.MsgTx, error) {
+
+	signedPkt, err := f.cfg.ChainWallet.SignAndFinalizePsbt(ctx, pkt)
+	if err != nil {
+		return nil, fmt.Errorf("unable to finalize PSBT: %v", err)
+	}
+
+	// Extra the tx manually, then perform some manual sanity checks to
+	// make sure things are ready for broadcast.
+	//
+	// TODO(roasbeef): could also do testmempoolaccept here
+	signedTx, err := psbt.Extract(signedPkt)
+	if err != nil {
+		return nil, fmt.Errorf("unable to extract psbt: %w", err)
+	}
+	err = blockchain.CheckTransactionSanity(btcutil.NewTx(signedTx))
+	if err != nil {
+		return nil, fmt.Errorf("genesis TX failed final checks: "+
+			"%w", err)
+	}
+
+	return signedTx, nil
+}
+
 // completeChannelFunding is the final step in the funding process. This is
 // launched as a goroutine after all the input ownership proofs have been sent.
 // This method handles the final process of funding+signing the PSBT+vPSBT,
@@ -563,8 +721,35 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	fundingState *pendingAssetFunding,
 	fundedVpkt *tapfreighter.FundedVPacket) (*chainhash.Hash, error) {
 
-	// TODO(roasbeef): funding state step also needs to make internal key
-	// available for taproot chan?
+	// Now that we have the initial PSBT template, we can start the funding
+	// flow with lnd.
+	fundingReq := OpenChanReq{
+		// TODO(roasbeef): needs more to be able to cover fees at X fee
+		// rate for coop close
+		ChanAmt: tapsend.DummyAmtSats,
+		PeerPub: fundingState.peerPub,
+		TempPID: fundingState.pid,
+	}
+	assetChanIntent, err := f.cfg.ChannelFunder.OpenChannel(
+		ctx, fundingReq,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to open channel: %v", err)
+	}
+
+	// Now that we have the intent back from lnd, we can use the PSBT
+	// information returned to set the proper internal key information for
+	// the vPSBT funding output.
+	psbtWithFundingOutput := assetChanIntent.FundingPsbt()
+	fundingInternalKey, err := schnorr.ParsePubKey(
+		psbtWithFundingOutput.Outputs[0].TaprootInternalKey,
+	)
+	fundingInternalKeyDesc := keychain.KeyDescriptor{
+		PubKey: fundingInternalKey,
+	}
+	fundedVpkt.VPacket.Outputs[0].SetAnchorInternalKey(
+		fundingInternalKeyDesc, f.cfg.ChainParams.HDCoinType,
+	)
 
 	// Given the asset inputs selected in the prior step, we'll now
 	// construct a template packet that maps our asset inputs to actual
@@ -577,90 +762,70 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 		return nil, err
 	}
 
-	// Now that we have the initial PSBT template, we can start the funding
-	// flow with lnd.
-	assetChanIntent, err := f.cfg.ChannelFunder.OpenChannel(OpenChanReq{
-		// TODO(roasbeef): needs more to be able to cover fees at X fee
-		// rate for coop close
-		ChanAmt:      tapsend.DummyAmtSats,
-		PeerPub:      fundingState.peerPub,
-		TempPID:      fundingState.pid,
-		PsbtTemplate: fundingPsbt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("unable to open channel: %v", err)
-	}
-
-	// With the asset intent back from lnd, we'll now be able to access the
-	// funding PSBT that includes the funding output lnd wants. We already
-	// computed this ourself, so we'll snip one off.
+	// Now that we have the initial skeleton for our funding PSBT, we'll
+	// modify the output value to match the channel amt asked for, which
+	// lnd will expect.
 	//
-	// TODO(roasbeef): PrepareAnchoringTemplate adds a dummy output, but
-	// lnd knows what it wants already
+	// Later on, after we anchor the vPSBT to the PSBT, we'll then verify
+	// with lnd that we arrived at the proper TxOut.
+	fundingPsbt.UnsignedTx.TxOut[0].Value = int64(fundingReq.ChanAmt)
 
-	// Before we can anchor all the packets in the funding template above.
-	// We'll ensure that we sign all the active and also passive assets in
-	// the PSBT.
-	for idx := range fundingVPkts {
-		vPkt := fundingVPkts[idx]
-
-		_, err := f.cfg.AssetWallet.SignVirtualPacket(vPkt)
-		if err != nil {
-			return nil, fmt.Errorf("unable to sign and commit "+
-				"virtual packet: %w", err)
-		}
-	}
-
-	// TODO(roasbef): hand off to freighter earlier?
-
-	passiveAssets, err := f.cfg.AssetWallet.CreatePassiveAssets(
-		ctx, fundingVPkts, fundedVpkt.InputCommitments,
+	// With the PSBT template created, we'll now ask lnd to fund the PSBT.
+	// This'll add yet another output (lnd's change output) to the
+	// template.
+	finalFundedPsbt, err := f.fundPsbt(
+		ctx, fundingPsbt, fundingState.feeRate.FeePerKWeight(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("unable to create passive assets: %w", err)
-	}
-	err = f.cfg.AssetWallet.SignPassiveAssets(passiveAssets)
-	if err != nil {
-		return nil, fmt.Errorf("unable to sign passive assets: %w", err)
+		return nil, fmt.Errorf("unable to fund PSBT: %v", err)
 	}
 
-	// Now that all the passive+active assets have been signed, we'll call
-	// into the wallet to: do the PSBT funding, add all the extra meta data
-	// to the PSBT, ask lnd to sign it, and also generate any new proof
-	// suffixes needed.
-	finalFundingTx, err := f.cfg.AssetWallet.AnchorVirtualTransactions(
-		ctx, &tapfreighter.AnchorVTxnsParams{
-			FeeRate:        fundingState.feeRate.FeePerKWeight(),
-			ActivePackets:  fundingVPkts,
-			PassivePackets: passiveAssets,
-		},
-	)
+	// If we fail at any step in the process, we want to make sure we
+	// unlock the inputs, so we'll add them to funding state now.
+	fundingState.lockedInputs = finalFundedPsbt.LockedUTXOs
+
+	// TODO(roasbeef): verify the PSBT matches up
+
+	// With the PSBT fully funded, we'll now sign all the vPackets before
+	// we finalize anchor them concretely into our PSBt.
+	signedPkts, err := f.signAllVPackets(ctx, fundedVpkt)
 	if err != nil {
-		return nil, fmt.Errorf("unable to finalize funding tx: %w", err)
+		return nil, fmt.Errorf("unable to sign vPackets: %v", err)
 	}
 
-	// TODO(roasbeef): need to call SetAnchorInternalKey later?
-	//  * only after know internal key, wallet lnd needs to communicate it
-	//  somehow
+	// With all the vPackets signed, we'll now anchor them to the funding
+	// PSBT. This'll update all the pkScripts for our funding output and
+	// change.
+	if err := f.anchorVPackets(finalFundedPsbt, signedPkts); err != nil {
+		return nil, fmt.Errorf("unable to anchor vPackets: %v", err)
+	}
 
 	// At this point, we're nearly done, we'll now present the final PSBT
 	// to lnd to verification. If this passes, then we're clear to
-	// broadcast the funding transaction.
-	err = assetChanIntent.BindPsbt(finalFundingTx.FundedPsbt.Pkt)
+	// sign+broadcast the funding transaction.
+	err = assetChanIntent.BindPsbt(ctx, finalFundedPsbt.Pkt)
 	if err != nil {
 		return nil, fmt.Errorf("unable to bind PSBT: %v", err)
+	}
+
+	// At this point, we're all clear, so we'll ask lnd to sign the PSBT
+	// (all the input information is in place) and also finalize it.
+	signedFundingTx, err := f.signAndFinalizePsbt(ctx, finalFundedPsbt.Pkt)
+	if err != nil {
+		return nil, fmt.Errorf("unable to finalize PSBT: %v", err)
 	}
 
 	// To conclude, we'll now broadcast the transaction, then return the
 	// TXID information back to the caller.
 	//
 	// TODO(roasbeef): return asset stuff too?
-	err = f.cfg.TxPublisher.PublishTransaction(ctx, finalFundingTx.FinalTx)
+	err = f.cfg.TxPublisher.PublishTransaction(ctx, signedFundingTx)
 	if err != nil {
-		return nil, fmt.Errorf("unable to broadcast transaction: %v", err)
+		return nil, fmt.Errorf("unable to broadcast funding "+
+			"txn: %v", err)
 	}
 
-	fundingTxid := finalFundingTx.FinalTx.TxHash()
+	fundingTxid := signedFundingTx.TxHash()
 
 	return &fundingTxid, nil
 }
@@ -736,6 +901,15 @@ func (f *FundingController) chanFunder() {
 					fundReq.ctx, fundingState, fundingVpkt,
 				)
 				if err != nil {
+					// If we've failed, then we'll unlock
+					// any of the locked UTXOs so they're
+					// free again.
+					err := fundingState.unlockInputs(
+						fundReq.ctx, f.cfg.ChainWallet,
+					)
+					fmt.Println("unable to unlock "+
+						"inputs: %v", err)
+
 					fundReq.errChan <- err
 					return
 				}

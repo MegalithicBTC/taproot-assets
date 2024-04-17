@@ -98,6 +98,13 @@ func (o *OpenChannel) Decode(r io.Reader) error {
 	return tlvStream.Decode(r)
 }
 
+// Bytes returns the serialized OpenChannel record.
+func (o *OpenChannel) Bytes() []byte {
+	var buf bytes.Buffer
+	_ = o.Encode(&buf)
+	return buf.Bytes()
+}
+
 // DecodeOpenChannel deserializes an OpenChannel from the given blob.
 func DecodeOpenChannel(blob tlv.Blob) (*OpenChannel, error) {
 	var o OpenChannel
