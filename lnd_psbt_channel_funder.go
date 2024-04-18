@@ -38,8 +38,8 @@ type assetChanIntent struct {
 
 // FundingPsbt is the original PsbtTemplate, plus the P2TR funding output
 // that'll create the channel.
-func (a *assetChanIntent) FundingPsbt() *psbt.Packet {
-	return a.psbtTemplate
+func (a *assetChanIntent) FundingPsbt() (*psbt.Packet, error) {
+	return a.psbtTemplate, nil
 }
 
 // BindPsbt accepts a new *unsigned* PSBT with any additional inputs or outputs

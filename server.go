@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/lndclient"
@@ -21,12 +22,14 @@ import (
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/channeldb"
 	lfn "github.com/lightningnetwork/lnd/fn"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/lightningnetwork/lnd/protofsm"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -649,10 +652,14 @@ func (s *Server) Stop() error {
 // A compile-time check to ensure that Server fully implements the
 // lnwallet.AuxLeafStore and lnwallet.AuxSigner interface.
 var _ lnwallet.AuxLeafStore = (*Server)(nil)
+var _ protofsm.MsgEndpoint = (*Server)(nil)
+var _ funding.AuxFundingController = (*Server)(nil)
 var _ lnwallet.AuxSigner = (*Server)(nil)
 
 // FetchLeavesFromView attempts to fetch the auxiliary leaves that correspond to
 // the passed aux blob, and pending fully evaluated HTLC view.
+//
+// NOTE: This method is part of the lnwallet.AuxLeafStore interface.
 func (s *Server) FetchLeavesFromView(chanState *channeldb.OpenChannel,
 	prevBlob tlv.Blob, view *lnwallet.HtlcView, isOurCommit bool,
 	ourBalance, theirBalance lnwire.MilliSatoshi,
@@ -677,6 +684,8 @@ func (s *Server) FetchLeavesFromView(chanState *channeldb.OpenChannel,
 // FetchLeavesFromCommit attempts to fetch the auxiliary leaves that
 // correspond to the passed aux blob, and an existing channel
 // commitment.
+//
+// NOTE: This method is part of the lnwallet.AuxLeafStore interface.
 func (s *Server) FetchLeavesFromCommit(chanState *channeldb.OpenChannel,
 	com channeldb.ChannelCommitment,
 	keys lnwallet.CommitmentKeyRing) (lfn.Option[lnwallet.CommitAuxLeaves],
@@ -696,6 +705,8 @@ func (s *Server) FetchLeavesFromCommit(chanState *channeldb.OpenChannel,
 
 // FetchLeavesFromRevocation attempts to fetch the auxiliary leaves
 // from a channel revocation that stores balance + blob information.
+//
+// NOTE: This method is part of the lnwallet.AuxLeafStore interface.
 func (s *Server) FetchLeavesFromRevocation(
 	rev *channeldb.RevocationLog) (lfn.Option[lnwallet.CommitAuxLeaves],
 	error) {
@@ -715,6 +726,8 @@ func (s *Server) FetchLeavesFromRevocation(
 // ApplyHtlcView serves as the state transition function for the custom
 // channel's blob. Given the old blob, and an HTLC view, then a new
 // blob should be returned that reflects the pending updates.
+//
+// NOTE: This method is part of the lnwallet.AuxLeafStore interface.
 func (s *Server) ApplyHtlcView(chanState *channeldb.OpenChannel,
 	prevBlob tlv.Blob, originalView *lnwallet.HtlcView, isOurCommit bool,
 	ourBalance, theirBalance lnwire.MilliSatoshi,
@@ -734,8 +747,33 @@ func (s *Server) ApplyHtlcView(chanState *channeldb.OpenChannel,
 	)
 }
 
+// Name returns the name of this endpoint. This MUST be unique across all
+// registered endpoints.
+//
+// NOTE: This method is part of the protofsm.MsgEndpoint interface.
+func (s *Server) Name() protofsm.EndPointName {
+	return s.cfg.AuxFundingController.Name()
+}
+
+// CanHandle returns true if the target message can be routed to this endpoint.
+//
+// NOTE: This method is part of the protofsm.MsgEndpoint interface.
+func (s *Server) CanHandle(msg lnwire.Message) bool {
+	return s.cfg.AuxFundingController.CanHandle(msg)
+}
+
+// SendMessage handles the target message, and returns true if the message was
+// able to be processed.
+//
+// NOTE: This method is part of the protofsm.MsgEndpoint interface.
+func (s *Server) SendMessage(msg lnwire.Message) bool {
+	return s.cfg.AuxFundingController.SendMessage(msg)
+}
+
 // SubmitSecondLevelSigBatch takes a batch of aux sign jobs and processes them
 // asynchronously.
+//
+// NOTE: This method is part of the lnwallet.AuxSigner interface.
 func (s *Server) SubmitSecondLevelSigBatch(chanState *channeldb.OpenChannel,
 	commitTx *wire.MsgTx, sigJob []lnwallet.AuxSigJob) error {
 
@@ -754,6 +792,8 @@ func (s *Server) SubmitSecondLevelSigBatch(chanState *channeldb.OpenChannel,
 
 // PackSigs takes a series of aux signatures and packs them into a single blob
 // that can be sent alongside the CommitSig messages.
+//
+// NOTE: This method is part of the lnwallet.AuxSigner interface.
 func (s *Server) PackSigs(
 	blob map[input.HtlcIndex]lfn.Option[tlv.Blob]) (lfn.Option[tlv.Blob],
 	error) {
@@ -771,6 +811,8 @@ func (s *Server) PackSigs(
 
 // UnpackSigs takes a packed blob of signatures and returns the original
 // signatures for each HTLC, keyed by HTLC index.
+//
+// NOTE: This method is part of the lnwallet.AuxSigner interface.
 func (s *Server) UnpackSigs(
 	blob lfn.Option[tlv.Blob]) (map[input.HtlcIndex]lfn.Option[tlv.Blob],
 	error) {
@@ -789,7 +831,7 @@ func (s *Server) UnpackSigs(
 // VerifySecondLevelSigs attempts to synchronously verify a batch of aux sig
 // jobs.
 //
-// TODO(roasbeef): go w/ the same async model?
+// NOTE: This method is part of the lnwallet.AuxSigner interface.
 func (s *Server) VerifySecondLevelSigs(chanState *channeldb.OpenChannel,
 	commitTx *wire.MsgTx, verifyJob []lnwallet.AuxVerifyJob) error {
 
@@ -804,4 +846,43 @@ func (s *Server) VerifySecondLevelSigs(chanState *channeldb.OpenChannel,
 	return s.cfg.AuxLeafSigner.VerifySecondLevelSigs(
 		chanState, commitTx, verifyJob,
 	)
+}
+
+// DescFromPendingChanID takes a pending channel ID, that may already be
+// known due to prior custom channel messages, and maybe returns an aux
+// funding desc which can be used to modify how a channel is funded.
+func (s *Server) DescFromPendingChanID(pid funding.PendingChanID,
+	chanState *channeldb.OpenChannel, keys lnwallet.CommitmentKeyRing,
+	initiator bool) (lfn.Option[lnwallet.AuxFundingDesc], error) {
+
+	srvrLog.Debugf("DescFromPendingChanID called")
+
+	select {
+	case <-s.ready:
+	case <-s.quit:
+		return lfn.None[lnwallet.AuxFundingDesc](),
+			fmt.Errorf("tapd is shutting down")
+	}
+
+	return s.cfg.AuxFundingController.DescFromPendingChanID(
+		pid, chanState, keys, initiator,
+	)
+}
+
+// DeriveTapscriptRoot takes a pending channel ID and maybe returns a
+// tapscript root that should be used when creating any musig2 sessions
+// for a channel.
+func (s *Server) DeriveTapscriptRoot(
+	pid funding.PendingChanID) (lfn.Option[chainhash.Hash], error) {
+
+	srvrLog.Debugf("DeriveTapscriptRoot called")
+
+	select {
+	case <-s.ready:
+	case <-s.quit:
+		return lfn.None[chainhash.Hash](),
+			fmt.Errorf("tapd is shutting down")
+	}
+
+	return s.cfg.AuxFundingController.DeriveTapscriptRoot(pid)
 }

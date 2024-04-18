@@ -6,7 +6,6 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"io"
-	"sync"
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/blockchain"
@@ -27,6 +26,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/tapsend"
 	"github.com/lightninglabs/taproot-assets/vm"
 	"github.com/lightningnetwork/lnd/channeldb"
+	lfn "github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -54,7 +54,8 @@ type ErrorReporter interface {
 // peer.
 type PeerMessenger interface {
 	// SendMessage sends a message to a remote peer.
-	SendMessage(peer btcec.PublicKey, msg lnwire.Message) error
+	SendMessage(ctx context.Context, peer btcec.PublicKey,
+		msg lnwire.Message) error
 }
 
 // OpenChanReq is a request to open a new asset channel with a remote peer.
@@ -85,14 +86,12 @@ type OpenChanReq struct {
 type AssetChanIntent interface {
 	// FundingPsbt is the original PsbtTemplate, plus the P2TR funding output
 	// that'll create the channel.
-	FundingPsbt() *psbt.Packet
+	FundingPsbt() (*psbt.Packet, error)
 
 	// BindPsbt accepts a new *unsigned* PSBT with any additional inputs or
 	// outputs (for change) added. This PSBT is still unsigned. This step
 	// performs final verification to ensure the PSBT is crafted in a manner
 	// that'll properly open the channel once broadcaster.
-	//
-	// TODO(roasbeef): calls PsbtVerify under the hood
 	BindPsbt(context.Context, *psbt.Packet) error
 }
 
@@ -106,8 +105,6 @@ type PsbtChannelFunder interface {
 	// been added, then BindPsbt should be called to progress the funding
 	// process. Afterwards, the funding transaction should be
 	// signed+broadcast.
-	//
-	// TODOD(roasbeef): always private chan by default
 	OpenChannel(context.Context, OpenChanReq) (AssetChanIntent, error)
 }
 
@@ -168,7 +165,7 @@ type bindFundingReq struct {
 
 	keyRing lnwallet.CommitmentKeyRing
 
-	resp chan fn.Option[lnwallet.AuxFundingDesc]
+	resp chan lfn.Option[lnwallet.AuxFundingDesc]
 }
 
 // assetRootReq is a message sent by lnd once we've sent the or received the
@@ -177,7 +174,7 @@ type bindFundingReq struct {
 type assetRootReq struct {
 	tempPID funding.PendingChanID
 
-	resp chan fn.Option[chainhash.Hash]
+	resp chan lfn.Option[chainhash.Hash]
 }
 
 // FundingController is used to drive TAP aware channel funding using a backing
@@ -196,8 +193,9 @@ type FundingController struct {
 
 	rootReqs chan *assetRootReq
 
-	quit chan struct{}
-	wg   sync.WaitGroup
+	// ContextGuard provides a wait group and main quit channel that can be
+	// used to create guarded contexts.
+	*fn.ContextGuard
 }
 
 // NewFundingController creates a new instance of the FundingController.
@@ -208,7 +206,10 @@ func NewFundingController(cfg FundingControllerCfg) *FundingController {
 		bindFundingReqs: make(chan *bindFundingReq, 10),
 		newFundingReqs:  make(chan *FundReq, 10),
 		rootReqs:        make(chan *assetRootReq, 10),
-		quit:            make(chan struct{}),
+		ContextGuard: &fn.ContextGuard{
+			DefaultTimeout: DefaultTimeout,
+			Quit:           make(chan struct{}),
+		},
 	}
 }
 
@@ -218,7 +219,7 @@ func (f *FundingController) Start() error {
 		return nil
 	}
 
-	f.wg.Add(1)
+	f.Wg.Add(1)
 	go f.chanFunder()
 
 	return nil
@@ -290,7 +291,7 @@ func (p *pendingAssetFunding) assetOutputs() []*AssetOutput {
 func newCommitBlobAndLeaves(fundingState *pendingAssetFunding,
 	leafCreator *AuxLeafCreator, lndOpenChan *channeldb.OpenChannel,
 	assetOpenChan *OpenChannel, keyRing lnwallet.CommitmentKeyRing,
-	initiator bool) ([]byte, *lnwallet.CommitAuxLeaves, error) {
+	initiator bool) ([]byte, lnwallet.CommitAuxLeaves, error) {
 
 	var (
 		localAssets, remoteAssets []*AssetOutput
@@ -320,17 +321,17 @@ func newCommitBlobAndLeaves(fundingState *pendingAssetFunding,
 		localSatBalance, remoteSatBalance, fakeView, keyRing,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, lnwallet.CommitAuxLeaves{}, err
 	}
 
 	var b bytes.Buffer
 	if err := firstCommit.Encode(&b); err != nil {
-		return nil, nil, err
+		return nil, lnwallet.CommitAuxLeaves{}, err
 	}
 
 	auxLeaves := firstCommit.Leaves()
 
-	return b.Bytes(), &auxLeaves, nil
+	return b.Bytes(), auxLeaves, nil
 }
 
 // toAuxFundingDesc converts the pending asset funding into a full aux funding
@@ -415,11 +416,11 @@ func (p *pendingAssetFunding) toAuxFundingDesc(chainParams address.ChainParams,
 
 	// Finally, we'll derive the tapscript root that'll commit to the new
 	// funding asset output we created above.
-	tapCommitment, err := commitment.FromAssets(fundingAsset)
-	if err != nil {
-		return nil, err
-	}
-	fundingDesc.TapscriptRoot = tapCommitment.TapscriptRoot(nil)
+	//tapCommitment, err := commitment.FromAssets(fundingAsset)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//fundingDesc.TapscriptRoot = tapCommitment.TapscriptRoot(nil)
 
 	return &fundingDesc, nil
 }
@@ -549,6 +550,9 @@ func (f *FundingController) fundVpkt(ctx context.Context, assetID asset.ID,
 func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 	vpkt *tappsbt.VPacket, fundingState *pendingAssetFunding) error {
 
+	ctx, done := f.WithCtxQuit()
+	defer done()
+
 	// For each of the inputs we selected, we'll create a new ownership
 	// proof for each of them. We'll send this to the peer so they can
 	// verify that we actually own the inputs we're using to fund
@@ -584,7 +588,7 @@ func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 		)
 
 		// Finally, we'll send the proof to the remote peer.
-		err := f.cfg.PeerMessenger.SendMessage(peerPub, inputProof)
+		err := f.cfg.PeerMessenger.SendMessage(ctx, peerPub, inputProof)
 		if err != nil {
 			return fmt.Errorf("unable to send proof to "+
 				"peer: %v", err)
@@ -601,7 +605,7 @@ func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 		fundingState.pid, *fundingAsset,
 	)
 
-	err := f.cfg.PeerMessenger.SendMessage(peerPub, assetOutputMsg)
+	err := f.cfg.PeerMessenger.SendMessage(ctx, peerPub, assetOutputMsg)
 	if err != nil {
 		return fmt.Errorf("unable to send proof to "+
 			"peer: %v", err)
@@ -771,10 +775,18 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// Now that we have the intent back from lnd, we can use the PSBT
 	// information returned to set the proper internal key information for
 	// the vPSBT funding output.
-	psbtWithFundingOutput := assetChanIntent.FundingPsbt()
+	psbtWithFundingOutput, err := assetChanIntent.FundingPsbt()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get funding PSBT: %w", err)
+	}
+
 	fundingInternalKey, err := schnorr.ParsePubKey(
 		psbtWithFundingOutput.Outputs[0].TaprootInternalKey,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse internal key: %w", err)
+	}
+
 	fundingInternalKeyDesc := keychain.KeyDescriptor{
 		PubKey: fundingInternalKey,
 	}
@@ -872,7 +884,7 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 // chanFunder is the main event loop that controls the asset specific portions
 // of the funding request.
 func (f *FundingController) chanFunder() {
-	defer f.wg.Done()
+	defer f.Wg.Done()
 
 	fundingFlows := make(fundingFlowIndex)
 
@@ -951,9 +963,9 @@ func (f *FundingController) chanFunder() {
 
 			// With the ownership proof sent, we'll now spawn a
 			// goroutine to take care of the final funding steps.
-			f.wg.Add(1)
+			f.Wg.Add(1)
 			go func() {
-				defer f.wg.Done()
+				defer f.Wg.Done()
 				fundingTxid, err := f.completeChannelFunding(
 					fundReq.ctx, fundingState, fundingVpkt,
 				)
@@ -1075,13 +1087,13 @@ func (f *FundingController) chanFunder() {
 			// have nothing to return.
 			fundingFlow, ok := fundingFlows[tempPID]
 			if !ok {
-				req.resp <- fn.None[chainhash.Hash]()
+				req.resp <- lfn.None[chainhash.Hash]()
 			}
 
 			fundingCommitment := fundingFlow.fundingAssetCommitment
 			tapscriptRoot := fundingCommitment.TapscriptRoot(nil)
 
-			req.resp <- fn.Some(tapscriptRoot)
+			req.resp <- lfn.Some(tapscriptRoot)
 
 		// A new request to map a pending channel ID to a complete aux
 		// funding desc has just arrived. If we know of the pid, then
@@ -1093,13 +1105,13 @@ func (f *FundingController) chanFunder() {
 			// have nothing to return.
 			fundingFlow, ok := fundingFlows[tempPID]
 			if !ok {
-				req.resp <- fn.None[lnwallet.AuxFundingDesc]()
+				req.resp <- lfn.None[lnwallet.AuxFundingDesc]()
 			}
 
 			// TODO(roasbeef): result type here?
 
 			fundingDesc, err := fundingFlow.toAuxFundingDesc(
-				f.ChainParams, req,
+				f.cfg.ChainParams, req,
 			)
 			if err != nil {
 				fErr := fmt.Errorf("unable to create aux funding "+
@@ -1108,9 +1120,9 @@ func (f *FundingController) chanFunder() {
 				continue
 			}
 
-			req.resp <- fn.Some(*fundingDesc)
+			req.resp <- lfn.Some(*fundingDesc)
 
-		case <-f.quit:
+		case <-f.Quit:
 			return
 		}
 	}
@@ -1175,52 +1187,64 @@ func (f *FundingController) FundChannel(ctx context.Context,
 	req.respChan = make(chan *chainhash.Hash, 1)
 	req.errChan = make(chan error, 1)
 
-	if !fn.SendOrQuit(f.newFundingReqs, &req, f.quit) {
+	if !fn.SendOrQuit(f.newFundingReqs, &req, f.Quit) {
 		return nil, fmt.Errorf("funding controller is shutting down")
 	}
 
-	return fn.RecvResp(req.respChan, req.errChan, f.quit)
+	return fn.RecvResp(req.respChan, req.errChan, f.Quit)
 }
 
-// DescPendingChanID takes a pending channel ID, that may already be known due
-// to prior custom channel messages, and maybe returns an aux funding desc
+// DescFromPendingChanID takes a pending channel ID, that may already be known
+// due to prior custom channel messages, and maybe returns an aux funding desc
 // which can be used to modify how a channel is funded.
 func (f *FundingController) DescFromPendingChanID(pid funding.PendingChanID,
 	openChan *channeldb.OpenChannel, keyRing lnwallet.CommitmentKeyRing,
-	initiator bool) fn.Option[lnwallet.AuxFundingDesc] {
+	initiator bool) (lfn.Option[lnwallet.AuxFundingDesc], error) {
 
 	req := &bindFundingReq{
 		tempPID:   pid,
 		initiator: initiator,
 		openChan:  openChan,
 		keyRing:   keyRing,
-		resp:      make(chan fn.Option[lnwallet.AuxFundingDesc], 1),
+		resp:      make(chan lfn.Option[lnwallet.AuxFundingDesc], 1),
 	}
 
-	if !fn.SendOrQuit(f.bindFundingReqs, req, f.quit) {
-		return fn.None[lnwallet.AuxFundingDesc]()
+	if !fn.SendOrQuit(f.bindFundingReqs, req, f.Quit) {
+		return lfn.None[lnwallet.AuxFundingDesc](),
+			fmt.Errorf("timeout when sending to funding controller")
 	}
 
-	resp, _ := fn.RecvResp(req.resp, nil, f.quit)
-	return resp
+	resp, err := fn.RecvResp(req.resp, nil, f.Quit)
+	if err != nil {
+		return lfn.None[lnwallet.AuxFundingDesc](),
+			fmt.Errorf("timeout when waiting for response: %w", err)
+	}
+
+	return resp, nil
 }
 
 // DeriveTapscriptRoot returns the tapscript root for the channel identified by
 // the pid. If we don't have any information about the channel, we return None.
-func (f *FundingController) DeriveTapscriptRoot(pid funding.PendingChanID,
-) fn.Option[chainhash.Hash] {
+func (f *FundingController) DeriveTapscriptRoot(
+	pid funding.PendingChanID) (lfn.Option[chainhash.Hash], error) {
 
 	req := &assetRootReq{
 		tempPID: pid,
-		resp:    make(chan fn.Option[chainhash.Hash], 1),
+		resp:    make(chan lfn.Option[chainhash.Hash], 1),
 	}
 
-	if !fn.SendOrQuit(f.rootReqs, req, f.quit) {
-		return fn.None[chainhash.Hash]()
+	if !fn.SendOrQuit(f.rootReqs, req, f.Quit) {
+		return lfn.None[chainhash.Hash](),
+			fmt.Errorf("timeout when sending to funding controller")
 	}
 
-	resp, _ := fn.RecvResp(req.resp, nil, f.quit)
-	return resp
+	resp, err := fn.RecvResp(req.resp, nil, f.Quit)
+	if err != nil {
+		return lfn.None[chainhash.Hash](),
+			fmt.Errorf("timeout when waiting for response: %w", err)
+	}
+
+	return resp, nil
 }
 
 // Name returns the name of this endpoint. This MUST be unique across all
@@ -1245,7 +1269,7 @@ func (f *FundingController) CanHandle(msg lnwire.Message) bool {
 // SendMessage handles the target message, and returns true if the message was
 // able to be processed.
 func (f *FundingController) SendMessage(msg lnwire.Message) bool {
-	return fn.SendOrQuit(f.msgs, msg, f.quit)
+	return fn.SendOrQuit(f.msgs, msg, f.Quit)
 }
 
 // TODO(roasbeef): will also want to supplement pendingchannels, etc

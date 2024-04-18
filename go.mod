@@ -29,7 +29,7 @@ require (
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.2
 	github.com/lightninglabs/lndclient v1.0.1-0.20240301093332-e39221e5a641
 	github.com/lightninglabs/neutrino/cache v1.1.2
-	github.com/lightningnetwork/lnd v0.17.0-beta.rc6.0.20240411014804-7eea1431d988
+	github.com/lightningnetwork/lnd v0.17.0-beta.rc6.0.20240418113032-a672b46173c4
 	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn v1.0.5
@@ -205,6 +205,6 @@ require (
 // allows us to specify that as an option.
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.30.0-hex-display
 
-replace github.com/lightningnetwork/lnd => github.com/lightningnetwork/lnd v0.17.0-beta.rc6.0.20240417185343-2f0c23dc4604
+replace github.com/lightningnetwork/lnd => github.com/lightningnetwork/lnd v0.17.0-beta.rc6.0.20240418182330-c93035cf33ca
 
-replace github.com/lightningnetwork/lnd/tlv => github.com/lightningnetwork/lnd/tlv v1.2.4-0.20240417185343-2f0c23dc4604
+replace github.com/lightningnetwork/lnd/tlv => github.com/lightningnetwork/lnd/tlv v1.2.4-0.20240418182330-c93035cf33ca

@@ -1,9 +1,11 @@
 package taprootassets
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/lndclient"
@@ -12,6 +14,8 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/lnrpc/verrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 // LndRpcChainBridge is an implementation of the tapgarden.ChainBridge
@@ -234,6 +238,22 @@ func (l *LndMsgTransportClient) SendCustomMessage(ctx context.Context,
 	msg lndclient.CustomMessage) error {
 
 	return l.lnd.Client.SendCustomMessage(ctx, msg)
+}
+
+// SendMessage sends a message to a remote peer.
+func (l *LndMsgTransportClient) SendMessage(ctx context.Context,
+	peer btcec.PublicKey, msg lnwire.Message) error {
+
+	var buf bytes.Buffer
+	if err := msg.Encode(&buf, 0); err != nil {
+		return fmt.Errorf("unable to encode message: %w", err)
+	}
+
+	return l.SendCustomMessage(ctx, lndclient.CustomMessage{
+		Peer:    route.NewVertex(&peer),
+		MsgType: uint32(msg.MsgType()),
+		Data:    buf.Bytes(),
+	})
 }
 
 // Ensure LndMsgTransportClient implements the rfq.PeerMessenger interface.
