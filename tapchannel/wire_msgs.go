@@ -12,15 +12,24 @@ import (
 )
 
 const (
-	// TxAssetMsgType is the message type of the TxAssetProof message.
-	TxAssetMsgType lnwire.MessageType = 32769 // starts at 32768
+	// TxAssetInputProofType is the message type of the TxAssetInput
+	// message.
+	TxAssetInputProofType lnwire.MessageType = 32769 // starts at 32768
+
+	// TxAssetOutputProofType is the message type of the TxAssetOutput
+	// message.
+	TxAssetOutputProofType lnwire.MessageType = 32770
+
+	// AssetFundingCreatedType is the message type of the
+	// AssetFundingCreated message.
+	AssetFundingCreatedType lnwire.MessageType = 32771
 )
 
-// TxAssetProof is sent by the initiator of a channel funding request to prove
+// TxAssetInputProof is sent by the initiator of a channel funding request to prove
 // to the upcoming responder that they are the owner of an asset input.
 //
 // TODO(roasbeef): fix challenge thing, use temp chan ID as the challenge?
-type TxAssetProof struct {
+type TxAssetInputProof struct {
 	// TempChanID is the temporary channel ID that was assigned to the
 	// channel.
 	TempChanID tlv.RecordT[tlv.TlvType0, funding.PendingChanID]
@@ -46,12 +55,12 @@ type TxAssetProof struct {
 }
 
 // MsgType returns the type of the message.
-func (t *TxAssetProof) MsgType() lnwire.MessageType {
-	return TxAssetMsgType
+func (t *TxAssetInputProof) MsgType() lnwire.MessageType {
+	return TxAssetInputProofType
 }
 
 // Decode reads the bytes stream and converts it to the object.
-func (t *TxAssetProof) Decode(r io.Reader, _ uint32) error {
+func (t *TxAssetInputProof) Decode(r io.Reader, _ uint32) error {
 	stream, err := tlv.NewStream(
 		t.TempChanID.Record(),
 		t.AssetID.Record(),
@@ -67,7 +76,7 @@ func (t *TxAssetProof) Decode(r io.Reader, _ uint32) error {
 
 // Encode converts object to the bytes stream and write it into the
 // write buffer.
-func (t *TxAssetProof) Encode(w *bytes.Buffer, _ uint32) error {
+func (t *TxAssetInputProof) Encode(w *bytes.Buffer, _ uint32) error {
 	stream, err := tlv.NewStream(
 		t.TempChanID.Record(),
 		t.AssetID.Record(),

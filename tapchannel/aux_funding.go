@@ -460,11 +460,11 @@ func (p *pendingAssetFunding) unlockInputs(ctx context.Context,
 	return nil
 }
 
-// msgToAssetProof converts a wire message to a TxAssetProof.
-func msgToAssetProof(msg lnwire.Message) (*TxAssetProof, error) {
+// msgToAssetProof converts a wire message to a TxAssetInputProof.
+func msgToAssetProof(msg lnwire.Message) (*TxAssetInputProof, error) {
 	switch msg := msg.(type) {
 	case *lnwire.Custom:
-		var assetProof TxAssetProof
+		var assetProof TxAssetInputProof
 		err := assetProof.Decode(bytes.NewReader(msg.Data), 0)
 		if err != nil {
 			return nil, err
@@ -472,7 +472,7 @@ func msgToAssetProof(msg lnwire.Message) (*TxAssetProof, error) {
 
 		return &assetProof, nil
 
-	case *TxAssetProof:
+	case *TxAssetInputProof:
 		return msg, nil
 
 	default:
@@ -487,7 +487,7 @@ type fundingFlowIndex map[funding.PendingChanID]*pendingAssetFunding
 // fromMsg attempts to match an incoming message to the pending funding flow,
 // and extracts the asset proof from the message.
 func (f *fundingFlowIndex) fromMsg(msg lnwire.Message,
-) (*TxAssetProof, *pendingAssetFunding) {
+) (*TxAssetInputProof, *pendingAssetFunding) {
 
 	assetProof, _ := msgToAssetProof(msg)
 
@@ -1059,9 +1059,9 @@ func (f *FundingController) chanFunder() {
 
 // ownershipProofToMsg converts an ownership proof to a wire message.
 func ownershipProofToMsg(pid funding.PendingChanID,
-	p *proof.Proof) *TxAssetProof {
+	p *proof.Proof) *TxAssetInputProof {
 
-	return &TxAssetProof{
+	return &TxAssetInputProof{
 		TempChanID: tlv.NewPrimitiveRecord[tlv.TlvType0](pid),
 		AssetID:    tlv.NewRecordT[tlv.TlvType1](p.Asset.ID()),
 		Amount:     tlv.NewPrimitiveRecord[tlv.TlvType2](p.Asset.Amount),
@@ -1161,9 +1161,9 @@ func (f *FundingController) Name() string {
 func (f *FundingController) CanHandle(msg lnwire.Message) bool {
 	switch msg := msg.(type) {
 	case *lnwire.Custom:
-		return msg.MsgType() == TxAssetMsgType
+		return msg.MsgType() == TxAssetInputProofType
 
-	case *TxAssetProof:
+	case *TxAssetInputProof:
 		return true
 	}
 
