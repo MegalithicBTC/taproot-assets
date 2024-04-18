@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -181,3 +182,17 @@ func (t *TxAssetOutputProof) Amt() uint64 {
 // A compile time check to ensure TxAssetOutputProof implements the
 // AssetFundingMsg interface.
 var _ AssetFundingMsg = (*TxAssetOutputProof)(nil)
+
+// AssetFundingCreated is sent by the initiator of the funding flow after
+// they've able to fully finalize the funding transaction. This message will be
+// sent before the normal funding_created message.
+type AssetFundingCreated struct {
+	// TempChanID is the temporary channel ID that was assigned to the
+	// channel.
+	TempChanID tlv.RecordT[tlv.TlvType0, funding.PendingChanID]
+
+	// FundingOutputs are the completed set of funding outputs. The remote
+	// party will use the transition (suffix) proofs encoded in the funding
+	// output to be able to create the aux funding+commitment blobs.
+	FundingOutputs tlv.RecordT[tlv.TlvType1, []tappsbt.VOutput]
+}

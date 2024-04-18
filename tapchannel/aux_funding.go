@@ -26,6 +26,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 	"github.com/lightninglabs/taproot-assets/vm"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -163,6 +164,10 @@ type bindFundingReq struct {
 
 	tempPID funding.PendingChanID
 
+	openChan *channeldb.OpenChannel
+
+	keyRing lnwallet.CommitmentKeyRing
+
 	resp chan fn.Option[lnwallet.AuxFundingDesc]
 }
 
@@ -259,6 +264,8 @@ type pendingAssetFunding struct {
 	lockedInputs []wire.OutPoint
 
 	fundingAssetCommitment *commitment.TapCommitment
+
+	fundingVOuts []*tappsbt.VOutput
 }
 
 // addProof adds a new proof to the set of proofs that'll be used to fund the
@@ -270,52 +277,68 @@ func (p *pendingAssetFunding) addProof(proof *proof.Proof) {
 // assetOutputs returns the set of asset outputs that'll be used to fund the
 // new asset channel.
 func (p *pendingAssetFunding) assetOutputs() []*AssetOutput {
-	return fn.Map(p.proofs, func(p *proof.Proof) *AssetOutput {
-		return &AssetOutput{
-			AssetBalance: AssetBalance{
-				AssetID: tlv.NewRecordT[tlv.TlvType0](
-					p.Asset.ID(),
-				),
-				Amount: tlv.NewPrimitiveRecord[tlv.TlvType1](
-					p.Asset.Amount,
-				),
-			},
-			Proof: tlv.NewRecordT[tlv.TlvType2](*p),
-		}
+	return fn.Map(p.fundingVOuts, func(vOut *tappsbt.VOutput) *AssetOutput {
+		return NewAssetOutput(
+			vOut.Asset.ID(), vOut.Asset.Amount,
+			*vOut.ProofSuffix,
+		)
 	})
 }
 
-// newCommitBlob creates a new commitment blob that'll be stored in the channel
-// state for the specified party.
-func newCommitBlob(chanAssets assetOutputListRecord,
-	local bool) ([]byte, error) {
+// newCommitBlobAndLeaves creates a new commitment blob that'll be stored in
+// the channel state for the specified party.
+func newCommitBlobAndLeaves(fundingState *pendingAssetFunding,
+	leafCreator *AuxLeafCreator, lndOpenChan *channeldb.OpenChannel,
+	assetOpenChan *OpenChannel, keyRing lnwallet.CommitmentKeyRing,
+	initiator bool) ([]byte, *lnwallet.CommitAuxLeaves, error) {
 
-	var commit Commitment
-	if local {
-		commit.LocalAssets = tlv.NewRecordT[tlv.TlvType0](
-			chanAssets,
-		)
+	var (
+		localAssets, remoteAssets []*AssetOutput
+	)
+	if initiator {
+		localAssets = assetOpenChan.FundedAssets.Val.outputs
 	} else {
-		commit.RemoteAssets = tlv.NewRecordT[tlv.TlvType1](
-			chanAssets,
-		)
+		remoteAssets = assetOpenChan.FundedAssets.Val.outputs
+	}
+
+	var localSatBalance, remoteSatBalance lnwire.MilliSatoshi
+
+	// We don't have a real prev state at this point, the leaf creator only
+	// needs the sum of the remote+local assets, so we'll populate that.
+	fakePrevState := NewCommitment(
+		localAssets, remoteAssets, nil, nil, lnwallet.CommitAuxLeaves{},
+	)
+
+	// Just like above, we don't have a real HTLC view here, so we'll pass
+	// in a blank view.
+	fakeView := &lnwallet.HtlcView{}
+
+	// With all the above, we'll generate the first commitment that'll be
+	// stored
+	_, firstCommit, err := leafCreator.generateAllocations(
+		fakePrevState, lndOpenChan, assetOpenChan, initiator,
+		localSatBalance, remoteSatBalance, fakeView, keyRing,
+	)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	var b bytes.Buffer
-	err := commit.Encode(&b)
-	if err != nil {
-		return nil, err
+	if err := firstCommit.Encode(&b); err != nil {
+		return nil, nil, err
 	}
 
-	return b.Bytes(), nil
+	auxLeaves := firstCommit.Leaves()
+
+	return b.Bytes(), &auxLeaves, nil
 }
 
 // toAuxFundingDesc converts the pending asset funding into a full aux funding
 // desc. This is the final step in the modified funding process, as after this,
 // both sides are able to construct the funding output, and will be able to
 // store the appropriate funding blobs.
-func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
-) (*lnwallet.AuxFundingDesc, error) {
+func (p *pendingAssetFunding) toAuxFundingDesc(chainParams address.ChainParams,
+	req *bindFundingReq) (*lnwallet.AuxFundingDesc, error) {
 
 	var fundingDesc lnwallet.AuxFundingDesc
 
@@ -332,24 +355,25 @@ func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
 	// commitment
 	fundingDesc.CustomFundingBlob = openChanDesc.Bytes()
 
-	// TODO(roasbeef): these are the wrong outputs, need the output, not
-	// the inputs
+	auxLeafStore := NewAuxLeafCreator(&LeafCreatorConfig{
+		ChainParams: &chainParams,
+	})
 
-	commitAssets := assetOutputListRecord{
-		outputs: assetOutputs,
-	}
+	// TODO(roasbeef): we need the local + remote key ring here
+	//  * diff revocation key for the remote + local party
+	//  * if moved to OP_TRUE for local+remote then wouldn't?
 
 	// Encode the commitment blobs for both the local and remote party.
 	// This will be the information for the very first state (state 0).
 	var err error
-	fundingDesc.CustomLocalCommitBlob, err = newCommitBlob(
-		commitAssets, p.initiator,
+	fundingDesc.CustomLocalCommitBlob, fundingDesc.LocalInitAuxLeaves, err = newCommitBlobAndLeaves(
+		p, auxLeafStore, req.openChan, openChanDesc, req.keyRing, p.initiator,
 	)
 	if err != nil {
 		return nil, err
 	}
-	fundingDesc.CustomRemoteCommitBlob, err = newCommitBlob(
-		commitAssets, !p.initiator,
+	fundingDesc.CustomRemoteCommitBlob, fundingDesc.RemoteInitAuxLeaves, err = newCommitBlobAndLeaves(
+		p, auxLeafStore, req.openChan, openChanDesc, req.keyRing, !p.initiator,
 	)
 	if err != nil {
 		return nil, err
@@ -638,13 +662,13 @@ func (f *FundingController) signAllVPackets(ctx context.Context,
 // complete, but unsigned PSBT packet that can be used to create out asset
 // channel.
 func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
-	allPackets []*tappsbt.VPacket) error {
+	allPackets []*tappsbt.VPacket) ([]*tappsbt.VOutput, error) {
 
 	// Given the set of vPackets we've created, we'll now now merge them
 	// all to create a map from output index to final tap commitment.
 	outputCommitments, err := tapsend.CreateOutputCommitments(allPackets)
 	if err != nil {
-		return fmt.Errorf("unable to create new output "+
+		return nil, fmt.Errorf("unable to create new output "+
 			"commitments: %w", err)
 	}
 
@@ -656,15 +680,17 @@ func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
 			fundedPkt.Pkt, vPkt, outputCommitments,
 		)
 		if err != nil {
-			return fmt.Errorf("error updating taproot output "+
+			return nil, fmt.Errorf("error updating taproot output "+
 				"keys: %w", err)
 		}
 	}
 
+	var fundingVOuts []*tappsbt.VOutput
+
 	// We're done creating the output commitments, we can now create the
 	// transition proof suffixes. This'll be the new proof we submit to
-	// relevant universe (or not) to update the new resting place of
-	// these assets.
+	// relevant universe (or not) to update the new resting place of these
+	// assets.
 	for idx := range allPackets {
 		vPkt := allPackets[idx]
 
@@ -674,16 +700,20 @@ func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
 				vPkt, outputCommitments, vOutIdx, allPackets,
 			)
 			if err != nil {
-				return fmt.Errorf("unable to create proof "+
+				return nil, fmt.Errorf("unable to create proof "+
 					"suffix for output %d of vPSBT %d: %w",
 					vOutIdx, idx, err)
 			}
 
 			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
+
+			fundingVOuts = append(
+				fundingVOuts, vPkt.Outputs[vOutIdx],
+			)
 		}
 	}
 
-	return nil
+	return fundingVOuts, nil
 }
 
 // signAndFinalizePsbt signs and finalizes the PSBT, then returns the finalized
@@ -797,9 +827,17 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// With all the vPackets signed, we'll now anchor them to the funding
 	// PSBT. This'll update all the pkScripts for our funding output and
 	// change.
-	if err := f.anchorVPackets(finalFundedPsbt, signedPkts); err != nil {
+	fundingVOuts, err := f.anchorVPackets(finalFundedPsbt, signedPkts)
+	if err != nil {
 		return nil, fmt.Errorf("unable to anchor vPackets: %v", err)
 	}
+
+	// Now that we've anchored the packets, we'll also set the fundingVOuts
+	// which we'll use later to send the AssetFundingCreated message to the
+	// responder, and also return the full AuxFundingDesc back to lnd.
+	fundingState.fundingVOuts = fundingVOuts
+
+	// TODO(roasbeef): send AssetFundingCreated message with fundingVOuts
 
 	// At this point, we're nearly done, we'll now present the final PSBT
 	// to lnd to verification. If this passes, then we're clear to
@@ -1061,7 +1099,7 @@ func (f *FundingController) chanFunder() {
 			// TODO(roasbeef): result type here?
 
 			fundingDesc, err := fundingFlow.toAuxFundingDesc(
-				req.initiator,
+				f.ChainParams, req,
 			)
 			if err != nil {
 				fErr := fmt.Errorf("unable to create aux funding "+
@@ -1147,14 +1185,15 @@ func (f *FundingController) FundChannel(ctx context.Context,
 // DescPendingChanID takes a pending channel ID, that may already be known due
 // to prior custom channel messages, and maybe returns an aux funding desc
 // which can be used to modify how a channel is funded.
-//
-// TODO(roasbeef): error on validation if fail due to invalid root match?
 func (f *FundingController) DescFromPendingChanID(pid funding.PendingChanID,
+	openChan *channeldb.OpenChannel, keyRing lnwallet.CommitmentKeyRing,
 	initiator bool) fn.Option[lnwallet.AuxFundingDesc] {
 
 	req := &bindFundingReq{
 		tempPID:   pid,
 		initiator: initiator,
+		openChan:  openChan,
+		keyRing:   keyRing,
 		resp:      make(chan fn.Option[lnwallet.AuxFundingDesc], 1),
 	}
 
