@@ -1212,7 +1212,7 @@ func (f *AssetWallet) AnchorVirtualTransactions(ctx context.Context,
 	}
 
 	anchorPkt, err := f.cfg.Wallet.FundPsbt(
-		ctx, sendPacket, 1, params.FeeRate,
+		ctx, sendPacket, 1, params.FeeRate, -1,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to fund psbt: %w", err)

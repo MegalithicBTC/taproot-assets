@@ -166,6 +166,15 @@ type bindFundingReq struct {
 	resp chan fn.Option[lnwallet.AuxFundingDesc]
 }
 
+// assetRootReq is a message sent by lnd once we've sent the or received the
+// OpenChannel message. We'll reply with a tapscript root if we know of one for
+// this pid, which lets lnd derive the proper funding output.
+type assetRootReq struct {
+	tempPID funding.PendingChanID
+
+	resp chan fn.Option[chainhash.Hash]
+}
+
 // FundingController is used to drive TAP aware channel funding using a backing
 // lnd node and an active connection to a tapd instance.
 type FundingController struct {
@@ -180,11 +189,11 @@ type FundingController struct {
 
 	newFundingReqs chan *FundReq
 
+	rootReqs chan *assetRootReq
+
 	quit chan struct{}
 	wg   sync.WaitGroup
 }
-
-// TODO(roasbeef): will use ProveAssetOwnership
 
 // NewFundingController creates a new instance of the FundingController.
 func NewFundingController(cfg FundingControllerCfg) *FundingController {
@@ -193,6 +202,7 @@ func NewFundingController(cfg FundingControllerCfg) *FundingController {
 		msgs:            make(chan lnwire.Message, 10),
 		bindFundingReqs: make(chan *bindFundingReq, 10),
 		newFundingReqs:  make(chan *FundReq, 10),
+		rootReqs:        make(chan *assetRootReq, 10),
 		quit:            make(chan struct{}),
 	}
 }
@@ -249,6 +259,8 @@ type pendingAssetFunding struct {
 	feeRate chainfee.SatPerVByte
 
 	lockedInputs []wire.OutPoint
+
+	fundingAssetCommitment *commitment.TapCommitment
 }
 
 // addProof adds a new proof to the set of proofs that'll be used to fund the
@@ -365,6 +377,9 @@ func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
 	// commitment
 	fundingDesc.CustomFundingBlob = openChanDesc.Bytes()
 
+	// TODO(roasbeef): these are the wrong outputs, need the output, not
+	// the inputs
+
 	commitAssets := assetOutputListRecord{
 		outputs: assetOutputs,
 	}
@@ -398,7 +413,6 @@ func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
 	fundingAsset.Amount = p.amt
 	fundingAsset.SplitCommitmentRoot = nil
 
-	// TODO(roasbeef): need to sign all inputs
 	fundingWitness := fn.Map(p.proofs, func(p *proof.Proof) asset.Witness {
 		return asset.Witness{
 			PrevID: &asset.PrevID{
@@ -417,6 +431,8 @@ func (p *pendingAssetFunding) toAuxFundingDesc(initiator bool,
 	fundingAsset.ScriptKey = asset.ScriptKey{
 		PubKey: fundingScriptTree.TaprootKey,
 	}
+
+	// TODO(roasbeef): needs to be sent over by initiator
 
 	// Finally, we'll derive the tapscript root that'll commit to the new
 	// funding asset output we created above.
@@ -596,7 +612,7 @@ func (f *FundingController) fundPsbt(
 	// outputs that mainly store assets.
 	changeIndex := 2
 	return f.cfg.ChainWallet.FundPsbt(
-		ctx, psbtPkt, 1, feeRate, changeIndex,
+		ctx, psbtPkt, 1, feeRate, int32(changeIndex),
 	)
 }
 
@@ -878,6 +894,24 @@ func (f *FundingController) chanFunder() {
 				continue
 			}
 
+			// Now that we know the final funding asset root along
+			// with the splits, we can derive the tapscript root
+			// that'll be used along side the internal key (which
+			// we'll only learn from lnd later as we finalize the
+			// funding PSBT).
+			fundingAsset := fundingVpkt.VPacket.Outputs[0].Asset.Copy()
+			fundingCommitment, err := commitment.FromAssets(
+				fundingAsset,
+			)
+			if err != nil {
+				fErr := fmt.Errorf("unable to create "+
+					"commitment: %v", err)
+				fundReq.errChan <- fErr
+				continue
+			}
+
+			fundingState.fundingAssetCommitment = fundingCommitment
+
 			// Before we can send our OpenChannel message, we'll
 			// need to derive then send a series of ownership
 			// proofs to the remote party.
@@ -931,6 +965,10 @@ func (f *FundingController) chanFunder() {
 			// TODO(rosabeef): verify that has challenge witness
 			// before?
 
+			// TODO(roasbeef): can verify all the challenge hashes
+			//  * then for funding_created should verify the asset
+			//  sent over
+
 			// Next, we'll validate this proof to make sure that
 			// the initiator is actually able to spend these
 			// outputs in the funding transaction.
@@ -967,6 +1005,24 @@ func (f *FundingController) chanFunder() {
 				f.cfg.ErrReporter.ReportError(tempPID, fErr)
 				continue
 			}
+
+		// A new request for a tapscript root has come across. If we
+		// know this pid, then we already derived the root before we
+		// sent OpenChannel, so we can just send that back to lnd
+		case req := <-f.rootReqs:
+			tempPID := req.tempPID
+
+			// If there's no funding flow for this tempPID, then we
+			// have nothing to return.
+			fundingFlow, ok := fundingFlows[tempPID]
+			if !ok {
+				req.resp <- fn.None[chainhash.Hash]()
+			}
+
+			fundingCommitment := fundingFlow.fundingAssetCommitment
+			tapscriptRoot := fundingCommitment.TapscriptRoot(nil)
+
+			req.resp <- fn.Some(tapscriptRoot)
 
 		// A new request to map a pending channel ID to a complete aux
 		// funding desc has just arrived. If we know of the pid, then
@@ -1071,6 +1127,24 @@ func (f *FundingController) DescFromPendingChanID(pid funding.PendingChanID,
 
 	if !fn.SendOrQuit(f.bindFundingReqs, req, f.quit) {
 		return fn.None[lnwallet.AuxFundingDesc]()
+	}
+
+	resp, _ := fn.RecvResp(req.resp, nil, f.quit)
+	return resp
+}
+
+// DeriveTapscriptRoot returns the tapscript root for the channel identified by
+// the pid. If we don't have any information about the channel, we return None.
+func (f *FundingController) DeriveTapscriptRoot(pid funding.PendingChanID,
+) fn.Option[chainhash.Hash] {
+
+	req := &assetRootReq{
+		tempPID: pid,
+		resp:    make(chan fn.Option[chainhash.Hash], 1),
+	}
+
+	if !fn.SendOrQuit(f.rootReqs, req, f.quit) {
+		return fn.None[chainhash.Hash]()
 	}
 
 	resp, _ := fn.RecvResp(req.resp, nil, f.quit)
