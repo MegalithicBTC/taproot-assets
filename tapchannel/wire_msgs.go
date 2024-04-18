@@ -25,6 +25,18 @@ const (
 	AssetFundingCreatedType lnwire.MessageType = 32771
 )
 
+// AssetFundingMsg is an interface that represents a message that is sent
+// during the asset funding process.
+type AssetFundingMsg interface {
+	lnwire.Message
+
+	FundingAssetID() asset.ID
+
+	PendingChanID() funding.PendingChanID
+
+	Amt() uint64
+}
+
 // TxAssetInputProof is sent by the initiator of a channel funding request to prove
 // to the upcoming responder that they are the owner of an asset input.
 //
@@ -43,15 +55,7 @@ type TxAssetInputProof struct {
 	// Proof is the last transition proof that proves this output was
 	// committed to in the Bitcoin transaction that anchors this asset
 	// output.
-	//
-	// TODO(roasbeef): will have a challenge witness proves, that sender is
-	// able to do the state transition
 	Proof tlv.RecordT[tlv.TlvType3, proof.Proof]
-
-	// End is a boolean that indicates that this is the last message in the
-	// series. After this, the receiver knows to attempt to compute the
-	// final funding asset root.
-	End tlv.RecordT[tlv.TlvType4, bool]
 }
 
 // MsgType returns the type of the message.
@@ -89,3 +93,91 @@ func (t *TxAssetInputProof) Encode(w *bytes.Buffer, _ uint32) error {
 
 	return stream.Encode(w)
 }
+
+// PendingChanID returns the temporary channel ID that was assigned to the
+// channel.
+func (t *TxAssetInputProof) PendingChanID() funding.PendingChanID {
+	return t.TempChanID.Val
+}
+
+// FundingAssetID returns the asset ID of the underlying asset.
+func (t *TxAssetInputProof) FundingAssetID() asset.ID {
+	return t.AssetID.Val
+}
+
+// Amt returns the amount of the asset that this output represents.
+func (t *TxAssetInputProof) Amt() uint64 {
+	return t.Amount.Val
+}
+
+// A compile time check to ensure TxAssetInputProof implements the
+// AssetFundingMsg interface.
+var _ AssetFundingMsg = (*TxAssetInputProof)(nil)
+
+// TxAssetOutputProof is sent by the initiator of the funding request *after*
+// the inputs proofs. The proof contained in this message is the final signed
+// asset funding output. Along with the input proofs, then the responder can
+// verify the asset funding output witnesses in full.
+type TxAssetOutputProof struct {
+	// TempChanID is the temporary channel ID that was assigned to the
+	// channel.
+	TempChanID tlv.RecordT[tlv.TlvType0, funding.PendingChanID]
+
+	// AssetOutput is one of the funding UTXOs that'll be used in channel
+	// funding.
+	AssetOutput tlv.RecordT[tlv.TlvType1, asset.Asset]
+
+	// TODO(roasbeef): end here after multi-asset?
+}
+
+// MsgType returns the type of the message.
+func (t *TxAssetOutputProof) MsgType() lnwire.MessageType {
+	return TxAssetInputProofType
+}
+
+// Decode reads the bytes stream and converts it to the object.
+func (t *TxAssetOutputProof) Decode(r io.Reader, _ uint32) error {
+	stream, err := tlv.NewStream(
+		t.TempChanID.Record(),
+		t.AssetOutput.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Decode(r)
+}
+
+// Encode converts object to the bytes stream and write it into the write
+// buffer.
+func (t *TxAssetOutputProof) Encode(w *bytes.Buffer, _ uint32) error {
+	stream, err := tlv.NewStream(
+		t.TempChanID.Record(),
+		t.AssetOutput.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// PendingChanID returns the temporary channel ID that was assigned to the
+// channel.
+func (t *TxAssetOutputProof) PendingChanID() funding.PendingChanID {
+	return t.TempChanID.Val
+}
+
+// FundingAssetID returns the asset ID of the underlying asset.
+func (t *TxAssetOutputProof) FundingAssetID() asset.ID {
+	return t.AssetOutput.Val.ID()
+}
+
+// Amt returns the amount of the asset that this output represents.
+func (t *TxAssetOutputProof) Amt() uint64 {
+	return t.AssetOutput.Val.Amount
+}
+
+// A compile time check to ensure TxAssetOutputProof implements the
+// AssetFundingMsg interface.
+var _ AssetFundingMsg = (*TxAssetOutputProof)(nil)
