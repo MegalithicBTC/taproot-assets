@@ -498,6 +498,8 @@ func (f *fundingFlowIndex) fromMsg(
 			assetID: assetID,
 			amt:     assetProof.Amt(),
 		}
+		(*f)[tempPID] = assetFunding
+
 	}
 
 	return assetProof, assetFunding, nil
