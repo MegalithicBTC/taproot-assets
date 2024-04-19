@@ -829,6 +829,8 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 		return nil, fmt.Errorf("unable to parse internal key: %w", err)
 	}
 
+	fundedVpkt.VPacket.Outputs[0].AnchorOutputBip32Derivation = nil
+	fundedVpkt.VPacket.Outputs[0].AnchorOutputTaprootBip32Derivation = nil
 	fundingInternalKeyDesc := keychain.KeyDescriptor{
 		PubKey: fundingInternalKey,
 	}
@@ -910,7 +912,8 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 			"AssetFundingCreated: %w", err)
 	}
 
-	log.Infof("Submitting finalized PSBT to lnd for verification")
+	log.Infof("Submitting finalized PSBT to lnd for verification: %s",
+		spew.Sdump(finalFundedPsbt.Pkt))
 
 	// At this point, we're nearly done, we'll now present the final PSBT
 	// to lnd to verification. If this passes, then we're clear to
@@ -1013,6 +1016,11 @@ func (f *FundingController) chanFunder() {
 			}
 
 			fundingState.fundingAssetCommitment = fundingCommitment
+
+			tapsend.LogCommitment(
+				"funding output", 0, fundingCommitment,
+				&btcec.PublicKey{}, nil, nil,
+			)
 
 			// Before we can send our OpenChannel message, we'll
 			// need to derive then send a series of ownership
@@ -1206,8 +1214,17 @@ func (f *FundingController) chanFunder() {
 			}
 
 			fundingCommitment := fundingFlow.fundingAssetCommitment
-			tapscriptRoot := fundingCommitment.TapscriptRoot(nil)
+			trimmedCommitment, err := tapsend.TrimSplitWitnesses(
+				fundingCommitment,
+			)
+			if err != nil {
+				fErr := fmt.Errorf("unable to anchor output "+
+					"script: %w", err)
+				f.cfg.ErrReporter.ReportError(tempPID, fErr)
+				continue
+			}
 
+			tapscriptRoot := trimmedCommitment.TapscriptRoot(nil)
 			log.Infof("Returning tapscript root: %v", tapscriptRoot)
 
 			req.resp <- lfn.Some(tapscriptRoot)

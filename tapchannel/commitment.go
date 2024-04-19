@@ -404,7 +404,7 @@ func CreateAllocations(chanState *channeldb.OpenChannel, ourBalance,
 	var (
 		numAllocations = len(filteredView.OurUpdates) +
 			len(filteredView.TheirUpdates) + 4
-		allocations = make([]*Allocation, numAllocations)
+		allocations = make([]*Allocation, 0, numAllocations)
 		addAlloc    = func(a *Allocation) {
 			allocations = append(allocations, a)
 		}
