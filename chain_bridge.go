@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/rfq"
 	"github.com/lightninglabs/taproot-assets/tapgarden"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lnrpc/verrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -254,6 +255,15 @@ func (l *LndMsgTransportClient) SendMessage(ctx context.Context,
 		MsgType: uint32(msg.MsgType()),
 		Data:    buf.Bytes(),
 	})
+}
+
+// TODO(guggero): Actually implement. But this is robably the wrong place for
+// this method anyway...
+func (l *LndMsgTransportClient) ReportError(pid funding.PendingChanID,
+	err error) {
+
+	srvrLog.Errorf("Error in funding flow for pending chan ID %x: %v",
+		pid[:], err)
 }
 
 // Ensure LndMsgTransportClient implements the rfq.PeerMessenger interface.

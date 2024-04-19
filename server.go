@@ -760,13 +760,14 @@ func (s *Server) ApplyHtlcView(chanState *channeldb.OpenChannel,
 //
 // NOTE: This method is part of the protofsm.MsgEndpoint interface.
 func (s *Server) Name() protofsm.EndPointName {
-	return s.cfg.AuxFundingController.Name()
+	return "taproot assets channel funding"
 }
 
 // CanHandle returns true if the target message can be routed to this endpoint.
 //
 // NOTE: This method is part of the protofsm.MsgEndpoint interface.
 func (s *Server) CanHandle(msg lnwire.Message) bool {
+	<-s.ready
 	return s.cfg.AuxFundingController.CanHandle(msg)
 }
 
@@ -775,6 +776,7 @@ func (s *Server) CanHandle(msg lnwire.Message) bool {
 //
 // NOTE: This method is part of the protofsm.MsgEndpoint interface.
 func (s *Server) SendMessage(msg lnwire.Message) bool {
+	<-s.ready
 	return s.cfg.AuxFundingController.SendMessage(msg)
 }
 

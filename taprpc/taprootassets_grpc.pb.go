@@ -100,6 +100,7 @@ type TaprootAssetsClient interface {
 	// SubscribeSendEvents allows a caller to subscribe to send events for outgoing
 	// asset transfers.
 	SubscribeSendEvents(ctx context.Context, in *SubscribeSendEventsRequest, opts ...grpc.CallOption) (TaprootAssets_SubscribeSendEventsClient, error)
+	FundChannel(ctx context.Context, in *FundChannelRequest, opts ...grpc.CallOption) (*FundChannelResponse, error)
 }
 
 type taprootAssetsClient struct {
@@ -336,6 +337,15 @@ func (x *taprootAssetsSubscribeSendEventsClient) Recv() (*SendEvent, error) {
 	return m, nil
 }
 
+func (c *taprootAssetsClient) FundChannel(ctx context.Context, in *FundChannelRequest, opts ...grpc.CallOption) (*FundChannelResponse, error) {
+	out := new(FundChannelResponse)
+	err := c.cc.Invoke(ctx, "/taprpc.TaprootAssets/FundChannel", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TaprootAssetsServer is the server API for TaprootAssets service.
 // All implementations must embed UnimplementedTaprootAssetsServer
 // for forward compatibility
@@ -422,6 +432,7 @@ type TaprootAssetsServer interface {
 	// SubscribeSendEvents allows a caller to subscribe to send events for outgoing
 	// asset transfers.
 	SubscribeSendEvents(*SubscribeSendEventsRequest, TaprootAssets_SubscribeSendEventsServer) error
+	FundChannel(context.Context, *FundChannelRequest) (*FundChannelResponse, error)
 	mustEmbedUnimplementedTaprootAssetsServer()
 }
 
@@ -488,6 +499,9 @@ func (UnimplementedTaprootAssetsServer) SubscribeReceiveEvents(*SubscribeReceive
 }
 func (UnimplementedTaprootAssetsServer) SubscribeSendEvents(*SubscribeSendEventsRequest, TaprootAssets_SubscribeSendEventsServer) error {
 	return status.Errorf(codes.Unimplemented, "method SubscribeSendEvents not implemented")
+}
+func (UnimplementedTaprootAssetsServer) FundChannel(context.Context, *FundChannelRequest) (*FundChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FundChannel not implemented")
 }
 func (UnimplementedTaprootAssetsServer) mustEmbedUnimplementedTaprootAssetsServer() {}
 
@@ -868,6 +882,24 @@ func (x *taprootAssetsSubscribeSendEventsServer) Send(m *SendEvent) error {
 	return x.ServerStream.SendMsg(m)
 }
 
+func _TaprootAssets_FundChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FundChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TaprootAssetsServer).FundChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/taprpc.TaprootAssets/FundChannel",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TaprootAssetsServer).FundChannel(ctx, req.(*FundChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TaprootAssets_ServiceDesc is the grpc.ServiceDesc for TaprootAssets service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -946,6 +978,10 @@ var TaprootAssets_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FetchAssetMeta",
 			Handler:    _TaprootAssets_FetchAssetMeta_Handler,
+		},
+		{
+			MethodName: "FundChannel",
+			Handler:    _TaprootAssets_FundChannel_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -58,6 +58,18 @@ type TxAssetInputProof struct {
 	Proof tlv.RecordT[tlv.TlvType3, proof.Proof]
 }
 
+// NewTxAssetInputProof creates a new TxAssetInputProof message.
+func NewTxAssetInputProof(pid funding.PendingChanID,
+	p proof.Proof) *TxAssetInputProof {
+
+	return &TxAssetInputProof{
+		TempChanID: tlv.NewPrimitiveRecord[tlv.TlvType0](pid),
+		AssetID:    tlv.NewRecordT[tlv.TlvType1](p.Asset.ID()),
+		Amount:     tlv.NewPrimitiveRecord[tlv.TlvType2](p.Asset.Amount),
+		Proof:      tlv.NewRecordT[tlv.TlvType3](p),
+	}
+}
+
 // MsgType returns the type of the message.
 func (t *TxAssetInputProof) MsgType() lnwire.MessageType {
 	return TxAssetInputProofType
@@ -130,9 +142,19 @@ type TxAssetOutputProof struct {
 	// TODO(roasbeef): end here after multi-asset?
 }
 
+// NewTxAssetOutputProof creates a new TxAssetOutputProof message.
+func NewTxAssetOutputProof(pid funding.PendingChanID,
+	a asset.Asset) *TxAssetOutputProof {
+
+	return &TxAssetOutputProof{
+		TempChanID:  tlv.NewPrimitiveRecord[tlv.TlvType0](pid),
+		AssetOutput: tlv.NewRecordT[tlv.TlvType1](a),
+	}
+}
+
 // MsgType returns the type of the message.
 func (t *TxAssetOutputProof) MsgType() lnwire.MessageType {
-	return TxAssetInputProofType
+	return TxAssetOutputProofType
 }
 
 // Decode reads the bytes stream and converts it to the object.
@@ -238,9 +260,19 @@ type AssetFundingCreated struct {
 	FundingOutput tlv.RecordT[tlv.TlvType1, proof.Proof]
 }
 
+// NewAssetFundingCreated creates a new AssetFundingCreated message.
+func NewAssetFundingCreated(pid funding.PendingChanID,
+	p proof.Proof) *AssetFundingCreated {
+
+	return &AssetFundingCreated{
+		TempChanID:    tlv.NewPrimitiveRecord[tlv.TlvType0](pid),
+		FundingOutput: tlv.NewRecordT[tlv.TlvType1](p),
+	}
+}
+
 // MsgType returns the type of the message.
-func (a *AssetFundingCreated) MsgType() lnwire.MessageType {
-	return TxAssetInputProofType
+func (t *AssetFundingCreated) MsgType() lnwire.MessageType {
+	return AssetFundingCreatedType
 }
 
 // Decode reads the bytes stream and converts it to the object.

@@ -35,6 +35,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/rfq"
 	"github.com/lightninglabs/taproot-assets/rfqmsg"
 	"github.com/lightninglabs/taproot-assets/rpcperms"
+	"github.com/lightninglabs/taproot-assets/tapchannel"
 	"github.com/lightninglabs/taproot-assets/tapfreighter"
 	"github.com/lightninglabs/taproot-assets/tapgarden"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
@@ -6156,6 +6157,37 @@ func (r *rpcServer) SubscribeRfqEventNtfns(
 		r.cfg.RfqManager, ntfnStream, marshallRfqEvent, filter, r.quit,
 		0,
 	)
+}
+
+func (r *rpcServer) FundChannel(ctx context.Context,
+	req *taprpc.FundChannelRequest) (*taprpc.FundChannelResponse,
+	error) {
+
+	peerPub, err := btcec.ParsePubKey(req.PeerPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing peer pubkey: %w", err)
+	}
+
+	if len(req.AssetId) != sha256.Size {
+		return nil, fmt.Errorf("asset ID must be 32 bytes")
+	}
+
+	fundReq := tapchannel.FundReq{
+		PeerPub: *peerPub,
+		Amt:     req.Amount,
+		FeeRate: chainfee.SatPerVByte(req.FeeRateSatPerVbyte),
+	}
+
+	copy(fundReq.AssetID[:], req.AssetId)
+
+	txHash, err := r.cfg.AuxFundingController.FundChannel(ctx, fundReq)
+	if err != nil {
+		return nil, fmt.Errorf("error funding channel: %w", err)
+	}
+
+	return &taprpc.FundChannelResponse{
+		Txid: txHash.String(),
+	}, nil
 }
 
 // serialize is a helper function that serializes a serializable object into a

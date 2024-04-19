@@ -1504,6 +1504,15 @@
         }
       }
     },
+    "taprpcFundChannelResponse": {
+      "type": "object",
+      "properties": {
+        "txid": {
+          "type": "string",
+          "description": "The channel funding transaction ID."
+        }
+      }
+    },
     "taprpcGenesisInfo": {
       "type": "object",
       "properties": {

@@ -359,9 +359,10 @@ func genServerConfig(cfg *Config, cfgLogger btclog.Logger,
 			GroupVerifier: tapgarden.GenGroupVerifier(
 				context.Background(), assetMintingStore,
 			),
-			// TODO(guggero): Add error reporter!
-			ErrReporter:   nil,
+			// TODO(guggero): Add actual error reporter!
+			ErrReporter:   msgTransportClient,
 			AssetWallet:   assetWallet,
+			CoinSelector:  coinSelect,
 			ChainParams:   tapChainParams,
 			GroupKeyIndex: tapdbAddrBook,
 			PeerMessenger: msgTransportClient,

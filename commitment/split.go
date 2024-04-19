@@ -221,6 +221,9 @@ func NewSplitCommitment(ctx context.Context, inputs []SplitCommitmentInput,
 			return err
 		}
 
+		log.Debugf("Creating split asset with hash %x for output "+
+			"index %d", splitKey[:], locator.OutputIndex)
+
 		_, err = splitTree.Insert(ctx, splitKey, splitLeaf)
 		if err != nil {
 			return err

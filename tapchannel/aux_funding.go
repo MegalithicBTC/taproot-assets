@@ -10,12 +10,12 @@ import (
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
@@ -25,7 +25,6 @@ import (
 	"github.com/lightninglabs/taproot-assets/tapgarden"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/tapsend"
-	"github.com/lightninglabs/taproot-assets/vm"
 	"github.com/lightningnetwork/lnd/channeldb"
 	lfn "github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/funding"
@@ -34,7 +33,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/tlv"
 )
 
 var (
@@ -131,6 +129,8 @@ type FundingControllerCfg struct {
 	// AssetWallet is the wallet that we'll use to handle the asset
 	// specific steps of the funding process.
 	AssetWallet tapfreighter.Wallet
+
+	CoinSelector tapfreighter.CoinSelector
 
 	// ChainParams is the chain params of the chain we operate on.
 	ChainParams address.ChainParams
@@ -271,6 +271,8 @@ type pendingAssetFunding struct {
 
 	lockedInputs []wire.OutPoint
 
+	lockedAssetInputs []wire.OutPoint
+
 	fundingAssetCommitment *commitment.TapCommitment
 
 	fundingOutputProofs []*proof.Proof
@@ -401,6 +403,20 @@ func (p *pendingAssetFunding) unlockInputs(ctx context.Context,
 	return nil
 }
 
+// unlockAssetInputs unlocks any asset inputs that were locked during the
+// funding process.
+func (p *pendingAssetFunding) unlockAssetInputs(ctx context.Context,
+	coinSelect tapfreighter.CoinSelector) error {
+
+	err := coinSelect.ReleaseCoins(ctx, p.lockedAssetInputs...)
+	if err != nil {
+		return fmt.Errorf("unable to unlock asset outpoints %v: %w",
+			p.lockedAssetInputs, err)
+	}
+
+	return nil
+}
+
 // msgToAssetProof converts a wire message to an assetProof.
 func msgToAssetProof(msg lnwire.Message) (AssetFundingMsg, error) {
 	switch msg := msg.(type) {
@@ -410,7 +426,8 @@ func msgToAssetProof(msg lnwire.Message) (AssetFundingMsg, error) {
 			var assetProof TxAssetInputProof
 			err := assetProof.Decode(bytes.NewReader(msg.Data), 0)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("error decoding as "+
+					"tx asset input proof: %w", err)
 			}
 
 			return &assetProof, nil
@@ -419,7 +436,8 @@ func msgToAssetProof(msg lnwire.Message) (AssetFundingMsg, error) {
 			var assetProof TxAssetOutputProof
 			err := assetProof.Decode(bytes.NewReader(msg.Data), 0)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("error decoding as "+
+					"tx asset output proof: %w", err)
 			}
 
 			return &assetProof, nil
@@ -428,7 +446,8 @@ func msgToAssetProof(msg lnwire.Message) (AssetFundingMsg, error) {
 			var assetProof AssetFundingCreated
 			err := assetProof.Decode(bytes.NewReader(msg.Data), 0)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("error decoding as "+
+					"asset funding created: %w", err)
 			}
 
 			return &assetProof, nil
@@ -457,10 +476,14 @@ type fundingFlowIndex map[funding.PendingChanID]*pendingAssetFunding
 
 // fromMsg attempts to match an incoming message to the pending funding flow,
 // and extracts the asset proof from the message.
-func (f *fundingFlowIndex) fromMsg(msg lnwire.Message,
-) (AssetFundingMsg, *pendingAssetFunding) {
+func (f *fundingFlowIndex) fromMsg(
+	msg lnwire.Message) (AssetFundingMsg, *pendingAssetFunding, error) {
 
-	assetProof, _ := msgToAssetProof(msg)
+	assetProof, err := msgToAssetProof(msg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error converting to asset proof: "+
+			"%w", err)
+	}
 
 	assetID := assetProof.FundingAssetID()
 	tempPID := assetProof.PendingChanID()
@@ -477,7 +500,7 @@ func (f *fundingFlowIndex) fromMsg(msg lnwire.Message,
 		}
 	}
 
-	return assetProof, assetFunding
+	return assetProof, assetFunding, nil
 }
 
 // fundVpkt attempts to fund a new vPacket using the asset wallet to find the
@@ -485,29 +508,33 @@ func (f *fundingFlowIndex) fromMsg(msg lnwire.Message,
 func (f *FundingController) fundVpkt(ctx context.Context, assetID asset.ID,
 	amt uint64) (*tapfreighter.FundedVPacket, error) {
 
-	// We don't yet know what the internal key will be yet as we can only
-	// know that after we create the musig2 session. So we'll use a dummy
-	// key for now.
-	var dummyKeyDesc keychain.KeyDescriptor
-
 	log.Infof("Funding new vPacket channel, asset_id=%v, amt=%v",
 		assetID, amt)
 
 	// Our funding script key will be the OP_TRUE addr that we'll use as
 	// the funding script on the asset level.
 	fundingScriptTree := NewFundingScriptTree()
-	fundingScriptKey := asset.ScriptKey{
-		PubKey: fundingScriptTree.TaprootKey,
-	}
+	fundingScriptKey := asset.NewScriptKey(fundingScriptTree.TaprootKey)
 
 	// Next, we'll use the asset wallet to fund a new vPSBT which'll be
 	// used as the asset level funding output for this transaction. In this
 	// case our destination will just be the OP_TRUE tapscript that we use
 	// for the funding output.
-	pktTemplate := tappsbt.ForInteractiveSend(
-		assetID, amt, fundingScriptKey, 0, dummyKeyDesc,
-		asset.V1, &f.cfg.ChainParams,
-	)
+	pktTemplate := &tappsbt.VPacket{
+		Inputs: []*tappsbt.VInput{{
+			PrevID: asset.PrevID{
+				ID: assetID,
+			},
+		}},
+		Outputs: []*tappsbt.VOutput{{
+			Amount:            amt,
+			AssetVersion:      asset.V1,
+			Interactive:       true,
+			AnchorOutputIndex: 0,
+			ScriptKey:         fundingScriptKey,
+		}},
+		ChainParams: &f.cfg.ChainParams,
+	}
 	fundDesc, err := tapsend.DescribeRecipients(
 		ctx, pktTemplate, f.cfg.GroupKeyIndex,
 	)
@@ -515,6 +542,8 @@ func (f *FundingController) fundVpkt(ctx context.Context, assetID asset.ID,
 		return nil, fmt.Errorf("unable to describe recipients: %v", err)
 	}
 
+	// Fund the packet. This will derive an anchor internal key for us, but
+	// we'll overwrite that later on.
 	return f.cfg.AssetWallet.FundPacket(
 		ctx, fundDesc, pktTemplate,
 	)
@@ -538,7 +567,6 @@ func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 	for _, assetInput := range vpkt.Inputs {
 		// First, we'll grab the proof for the asset input, then
 		// generate the challenge witness to place in the proof so it
-		assetProof := assetInput.Proof
 		challengeWitness, err := f.cfg.AssetWallet.SignOwnershipProof(
 			assetInput.Asset(),
 		)
@@ -551,18 +579,28 @@ func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 		// challenge
 
 		// With the witness obtained, we'll emplace it, then add this
-		// to our set of relevant input proofs.
-		assetProof.ChallengeWitness = challengeWitness
-		fundingState.proofs = append(fundingState.proofs, assetProof)
-	}
+		// to our set of relevant input proofs. But we create a copy of
+		// the proof first, to make sure we don't modify the vPacket.
+		var proofBuf bytes.Buffer
+		err = assetInput.Proof.Encode(&proofBuf)
+		if err != nil {
+			return fmt.Errorf("error serializing proof: %w", err)
+		}
 
-	// TODO(roasbeef): remove mutation above
+		proofCopy := &proof.Proof{}
+		if err := proofCopy.Decode(&proofBuf); err != nil {
+			return fmt.Errorf("error decoding proof: %w", err)
+		}
+
+		proofCopy.ChallengeWitness = challengeWitness
+		fundingState.proofs = append(fundingState.proofs, proofCopy)
+	}
 
 	// With all our proofs assembled, we'll now send each of them to the
 	// remote peer in series.
 	for i := range fundingState.proofs {
-		inputProof := inputOwnershipProofToMsg(
-			fundingState.pid, fundingState.proofs[i],
+		inputProof := NewTxAssetInputProof(
+			fundingState.pid, *fundingState.proofs[i],
 		)
 
 		// Finally, we'll send the proof to the remote peer.
@@ -579,9 +617,7 @@ func (f *FundingController) sendInputOwnershipProofs(peerPub btcec.PublicKey,
 	//
 	// TODO(roasbeef): generalize for multi-asset
 	fundingAsset := vpkt.Outputs[0].Asset.Copy()
-	assetOutputMsg := fundingAssetOutputToMsg(
-		fundingState.pid, *fundingAsset,
-	)
+	assetOutputMsg := NewTxAssetOutputProof(fundingState.pid, *fundingAsset)
 
 	log.Infof("Sending TLV for funding asset output to remote "+
 		"party: %v", spew.Sdump(fundingAsset))
@@ -601,13 +637,12 @@ func (f *FundingController) fundPsbt(
 	ctx context.Context, psbtPkt *psbt.Packet,
 	feeRate chainfee.SatPerKWeight) (*tapsend.FundedPsbt, error) {
 
-	// We set the change index to be the 3rd output. We could instead have
-	// it be the second output, but that would mingle lnd's funds with
-	// outputs that mainly store assets.
-	changeIndex := 2
-	return f.cfg.ChainWallet.FundPsbt(
-		ctx, psbtPkt, 1, feeRate, int32(changeIndex),
-	)
+	// We set the change index to be a new, 3rd output by specifying -1
+	// (which means: please add change output). We could instead have it be
+	// the second output, but that would mingle lnd's funds with outputs
+	// that mainly store assets.
+	changeIndex := int32(-1)
+	return f.cfg.ChainWallet.FundPsbt(ctx, psbtPkt, 1, feeRate, changeIndex)
 }
 
 // signAllVPackets takes the funding vPSBT, signs all the explicit transfer,
@@ -620,7 +655,11 @@ func (f *FundingController) signAllVPackets(ctx context.Context,
 	log.Infof("Signing all funding vPackets")
 
 	activePkt := fundingVpkt.VPacket
-	_, err := f.cfg.AssetWallet.SignVirtualPacket(activePkt)
+
+	encoded, err := tappsbt.Encode(activePkt)
+	log.Debugf("Active packet: %x", encoded)
+
+	_, err = f.cfg.AssetWallet.SignVirtualPacket(activePkt)
 	if err != nil {
 		return nil, fmt.Errorf("unable to sign and commit "+
 			"virtual packet: %w", err)
@@ -741,14 +780,9 @@ func (f *FundingController) sendAssetFundingCreated(ctx context.Context,
 
 	log.Infof("Sending AssetFundingCreated")
 
-	assetFundingCreated := &AssetFundingCreated{
-		TempChanID: tlv.NewPrimitiveRecord[tlv.TlvType0](
-			fundingState.pid,
-		),
-		FundingOutput: tlv.NewRecordT[tlv.TlvType1](
-			*fundingState.fundingOutputProofs[0],
-		),
-	}
+	assetFundingCreated := NewAssetFundingCreated(
+		fundingState.pid, *fundingState.fundingOutputProofs[0],
+	)
 
 	return f.cfg.PeerMessenger.SendMessage(
 		ctx, fundingState.peerPub, assetFundingCreated,
@@ -769,15 +803,11 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// Now that we have the initial PSBT template, we can start the funding
 	// flow with lnd.
 	fundingReq := OpenChanReq{
-		// TODO(roasbeef): needs more to be able to cover fees at X fee
-		// rate for coop close
-		ChanAmt: tapsend.DummyAmtSats,
+		ChanAmt: funding.MinChanFundingSize,
 		PeerPub: fundingState.peerPub,
 		TempPID: fundingState.pid,
 	}
-	assetChanIntent, err := f.cfg.ChannelFunder.OpenChannel(
-		ctx, fundingReq,
-	)
+	assetChanIntent, err := f.cfg.ChannelFunder.OpenChannel(ctx, fundingReq)
 	if err != nil {
 		return nil, fmt.Errorf("unable to open channel: %v", err)
 	}
@@ -791,7 +821,7 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	}
 	internalKeyBytes := psbtWithFundingOutput.Outputs[0].TaprootInternalKey
 
-	log.Infof("Swapping in true taproot internal key: %v",
+	log.Infof("Swapping in true taproot internal key: %x",
 		internalKeyBytes)
 
 	fundingInternalKey, err := schnorr.ParsePubKey(internalKeyBytes)
@@ -810,12 +840,17 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// construct a template packet that maps our asset inputs to actual
 	// inputs in the PSBT packet.
 	fundingVPkts := []*tappsbt.VPacket{fundedVpkt.VPacket}
-	fundingPsbt, err := tapsend.PrepareAnchoringTemplate(
-		fundingVPkts,
-	)
+	fundingPsbt, err := tapsend.PrepareAnchoringTemplate(fundingVPkts)
 	if err != nil {
 		return nil, err
 	}
+
+	fundingState.lockedAssetInputs = fn.Map(
+		fundedVpkt.VPacket.Inputs,
+		func(in *tappsbt.VInput) wire.OutPoint {
+			return in.PrevID.OutPoint
+		},
+	)
 
 	// Now that we have the initial skeleton for our funding PSBT, we'll
 	// modify the output value to match the channel amt asked for, which
@@ -825,8 +860,7 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// with lnd that we arrived at the proper TxOut.
 	fundingPsbt.UnsignedTx.TxOut[0].Value = int64(fundingReq.ChanAmt)
 
-	log.Infof("Funding PSBT pre funding: ",
-		spew.Sdump(fundingPsbt.UnsignedTx))
+	log.Infof("Funding PSBT pre funding: %s", spew.Sdump(fundingPsbt))
 
 	// With the PSBT template created, we'll now ask lnd to fund the PSBT.
 	// This'll add yet another output (lnd's change output) to the
@@ -838,8 +872,7 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 		return nil, fmt.Errorf("unable to fund PSBT: %v", err)
 	}
 
-	log.Infof("Funding PSBT post funding: ",
-		spew.Sdump(fundingPsbt.UnsignedTx))
+	log.Infof("Funding PSBT post funding: %s", spew.Sdump(finalFundedPsbt))
 
 	// If we fail at any step in the process, we want to make sure we
 	// unlock the inputs, so we'll add them to funding state now.
@@ -1008,11 +1041,22 @@ func (f *FundingController) chanFunder() {
 					// If we've failed, then we'll unlock
 					// any of the locked UTXOs so they're
 					// free again.
-					err := fundingState.unlockInputs(
+					uErr := fundingState.unlockInputs(
 						fundReq.ctx, f.cfg.ChainWallet,
 					)
-					fmt.Println("unable to unlock "+
-						"inputs: %v", err)
+					if uErr != nil {
+						log.Errorf("Unable to unlock "+
+							"inputs: %v", uErr)
+					}
+
+					uErr = fundingState.unlockAssetInputs(
+						fundReq.ctx, f.cfg.CoinSelector,
+					)
+					if uErr != nil {
+						log.Errorf("Unable to unlock "+
+							"asset inputs: %v",
+							uErr)
+					}
 
 					fundReq.errChan <- err
 					return
@@ -1028,7 +1072,18 @@ func (f *FundingController) chanFunder() {
 			// A new proof message has just come in, so we'll
 			// extract the real proof wire message from the opaque
 			// message.
-			assetProofMgs, assetFunding := fundingFlows.fromMsg(msg)
+			assetProofMgs, assetFunding, err := fundingFlows.fromMsg(
+				msg,
+			)
+			if err != nil {
+				fErr := fmt.Errorf("unable to convert msg to "+
+					"proof: %w", err)
+				f.cfg.ErrReporter.ReportError(
+					funding.PendingChanID{}, fErr,
+				)
+				log.Error(fErr)
+				continue
+			}
 
 			log.Infof("Recv'd new message: %T", assetProofMgs)
 
@@ -1052,7 +1107,7 @@ func (f *FundingController) chanFunder() {
 				)
 				if err != nil {
 					fErr := fmt.Errorf("unable to verify "+
-						"proof: %w", err)
+						"ownership proof: %w", err)
 					f.cfg.ErrReporter.ReportError(
 						tempPID, fErr,
 					)
@@ -1071,41 +1126,37 @@ func (f *FundingController) chanFunder() {
 				// First, we'll populate a map of all the
 				// previous inputs. This is like the prev
 				// output fetcher for Bitcoin.
-				var prevAssets commitment.InputSet
-				for _, assetProof := range assetFunding.proofs {
-					prevID := asset.PrevID{
-						OutPoint: assetProof.OutPoint(),
-						ID:       assetProof.Asset.ID(),
-						ScriptKey: asset.ToSerialized(
-							assetProof.Asset.ScriptKey.PubKey,
-						),
-					}
-
-					prevAssets[prevID] = &assetProof.Asset
-				}
+				//prevAssets := make(commitment.InputSet)
+				outputAsset := assetProof.AssetOutput.Val
+				//witnesses := outputAsset.Witnesses()
+				//prevID := witnesses[0].PrevID
+				//
+				//prevAssets[*prevID] = &outputAsset
 
 				// With the inputs specified, we'll now attempt
 				// to validate the state transition for the
 				// asset funding output.
-				engine, _ := vm.New(
-					&assetProof.AssetOutput.Val, nil,
-					prevAssets,
-				)
-				if err := engine.Execute(); err != nil {
-					fErr := fmt.Errorf("unable to verify "+
-						"proof: %w", err)
-					f.cfg.ErrReporter.ReportError(
-						tempPID, fErr,
-					)
-					log.Error(fErr)
-					continue
-				}
+
+				// TODO(guggero): We can't actually verify the
+				// asset here, because it's not signed yet...
+				//engine, _ := vm.New(
+				//	&outputAsset, nil, prevAssets,
+				//)
+				//if err := engine.Execute(); err != nil {
+				//	fErr := fmt.Errorf("unable to verify "+
+				//		"output proof: %w", err)
+				//	f.cfg.ErrReporter.ReportError(
+				//		tempPID, fErr,
+				//	)
+				//	log.Error(fErr)
+				//	continue
+				//}
 
 				// If we reached this point, then the asset
 				// output and all inputs are valid, so we'll
 				// store the funding asset commitment.
 				fundingCommitment, err := commitment.FromAssets(
-					&assetProof.AssetOutput.Val,
+					&outputAsset,
 				)
 				if err != nil {
 					fErr := fmt.Errorf("unable to create "+
@@ -1148,7 +1199,10 @@ func (f *FundingController) chanFunder() {
 			// have nothing to return.
 			fundingFlow, ok := fundingFlows[tempPID]
 			if !ok {
+				log.Infof("No funding flow for temp ID %x for "+
+					"tapscript root request", tempPID[:])
 				req.resp <- lfn.None[chainhash.Hash]()
+				continue
 			}
 
 			fundingCommitment := fundingFlow.fundingAssetCommitment
@@ -1168,7 +1222,10 @@ func (f *FundingController) chanFunder() {
 			// have nothing to return.
 			fundingFlow, ok := fundingFlows[tempPID]
 			if !ok {
+				log.Infof("No funding flow for temp ID %x for "+
+					"bind funding request", tempPID[:])
 				req.resp <- lfn.None[lnwallet.AuxFundingDesc]()
+				continue
 			}
 
 			// TODO(roasbeef): result type here?
@@ -1190,30 +1247,6 @@ func (f *FundingController) chanFunder() {
 		case <-f.Quit:
 			return
 		}
-	}
-}
-
-// inputOwnershipProofToMsg converts an ownership proof of an input to a wire
-// message.
-func inputOwnershipProofToMsg(pid funding.PendingChanID,
-	p *proof.Proof) *TxAssetInputProof {
-
-	return &TxAssetInputProof{
-		TempChanID: tlv.NewPrimitiveRecord[tlv.TlvType0](pid),
-		AssetID:    tlv.NewRecordT[tlv.TlvType1](p.Asset.ID()),
-		Amount:     tlv.NewPrimitiveRecord[tlv.TlvType2](p.Asset.Amount),
-		Proof:      tlv.NewRecordT[tlv.TlvType3](*p),
-	}
-}
-
-// fundingAssetOutputToMsg converts an output proof to a wire message. This
-// will be one of our asset funding UTXOs.
-func fundingAssetOutputToMsg(pid funding.PendingChanID,
-	a asset.Asset) *TxAssetOutputProof {
-
-	return &TxAssetOutputProof{
-		TempChanID:  tlv.NewPrimitiveRecord[tlv.TlvType0](pid),
-		AssetOutput: tlv.NewRecordT[tlv.TlvType1](a),
 	}
 }
 
