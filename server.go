@@ -192,6 +192,11 @@ func (s *Server) initialize(interceptorChain *rpcperms.InterceptorChain) error {
 		return fmt.Errorf("unable to start aux leaf signer: %w", err)
 	}
 
+	// TODO(roasbeef): needs to be registered w/ lnd's message router
+	if err := s.cfg.AuxFundingController.Start(); err != nil {
+		return fmt.Errorf("unable to start aux funding controller: %w", err)
+	}
+
 	if s.cfg.UniversePublicAccess {
 		err := s.cfg.UniverseFederation.SetAllowPublicAccess()
 		if err != nil {
@@ -632,6 +637,9 @@ func (s *Server) Stop() error {
 		return err
 	}
 	if err := s.cfg.AuxLeafSigner.Stop(); err != nil {
+		return err
+	}
+	if err := s.cfg.AuxFundingController.Stop(); err != nil {
 		return err
 	}
 
