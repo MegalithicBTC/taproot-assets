@@ -163,7 +163,9 @@ type bindFundingReq struct {
 
 	openChan *channeldb.OpenChannel
 
-	keyRing lnwallet.CommitmentKeyRing
+	localKeyRing lnwallet.CommitmentKeyRing
+
+	remoteKeyRing lnwallet.CommitmentKeyRing
 
 	resp chan lfn.Option[lnwallet.AuxFundingDesc]
 }
@@ -368,13 +370,15 @@ func (p *pendingAssetFunding) toAuxFundingDesc(chainParams address.ChainParams,
 	// This will be the information for the very first state (state 0).
 	var err error
 	fundingDesc.CustomLocalCommitBlob, fundingDesc.LocalInitAuxLeaves, err = newCommitBlobAndLeaves(
-		p, auxLeafStore, req.openChan, openChanDesc, req.keyRing, p.initiator,
+		p, auxLeafStore, req.openChan, openChanDesc, req.localKeyRing,
+		p.initiator,
 	)
 	if err != nil {
 		return nil, err
 	}
 	fundingDesc.CustomRemoteCommitBlob, fundingDesc.RemoteInitAuxLeaves, err = newCommitBlobAndLeaves(
-		p, auxLeafStore, req.openChan, openChanDesc, req.keyRing, !p.initiator,
+		p, auxLeafStore, req.openChan, openChanDesc, req.remoteKeyRing,
+		!p.initiator,
 	)
 	if err != nil {
 		return nil, err
@@ -1198,15 +1202,17 @@ func (f *FundingController) FundChannel(ctx context.Context,
 // due to prior custom channel messages, and maybe returns an aux funding desc
 // which can be used to modify how a channel is funded.
 func (f *FundingController) DescFromPendingChanID(pid funding.PendingChanID,
-	openChan *channeldb.OpenChannel, keyRing lnwallet.CommitmentKeyRing,
+	openChan *channeldb.OpenChannel, localKeyRing,
+	remoteKeyRing lnwallet.CommitmentKeyRing,
 	initiator bool) (lfn.Option[lnwallet.AuxFundingDesc], error) {
 
 	req := &bindFundingReq{
-		tempPID:   pid,
-		initiator: initiator,
-		openChan:  openChan,
-		keyRing:   keyRing,
-		resp:      make(chan lfn.Option[lnwallet.AuxFundingDesc], 1),
+		tempPID:       pid,
+		initiator:     initiator,
+		openChan:      openChan,
+		localKeyRing:  localKeyRing,
+		remoteKeyRing: remoteKeyRing,
+		resp:          make(chan lfn.Option[lnwallet.AuxFundingDesc], 1),
 	}
 
 	if !fn.SendOrQuit(f.bindFundingReqs, req, f.Quit) {
@@ -1275,3 +1281,7 @@ func (f *FundingController) SendMessage(msg lnwire.Message) bool {
 // TODO(roasbeef): will also want to supplement pendingchannels, etc
 
 // TODO(roasbeef): try to protofsm it?
+
+// A compile-time assertion to ensure FundingController meets the
+// funding.AuxFundingController interface.
+var _ funding.AuxFundingController = (*FundingController)(nil)
