@@ -6,7 +6,6 @@ import (
 
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/proof"
-	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -183,6 +182,44 @@ func (t *TxAssetOutputProof) Amt() uint64 {
 // AssetFundingMsg interface.
 var _ AssetFundingMsg = (*TxAssetOutputProof)(nil)
 
+// RecordSlice is a generic type that can be used to encode a slice of records.
+// It uses a var int prefix of the number of records.
+type RecordSlice[T tlv.RecordProducer] struct {
+	records []T
+}
+
+func eRecordSlice[T tlv.RecordProducer](w *bytes.Buffer, recordPs []T, buf *[8]byte) error {
+	if err := tlv.WriteVarInt(w, uint64(len(recordPs)), buf); err != nil {
+		return err
+	}
+
+	for _, recordP := range recordPs {
+		record := recordP.Record()
+		if err := record.Encode(w); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func dRecordSlice[T tlv.RecordProducer](r io.Reader, recordPs []T, buf *[8]byte) error {
+	numRecords, err := tlv.ReadVarInt(r, buf)
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < int(numRecords); i++ {
+		var l uint64
+		record := recordPs[i].Record()
+		if err := record.Decode(r, l); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // AssetFundingCreated is sent by the initiator of the funding flow after
 // they've able to fully finalize the funding transaction. This message will be
 // sent before the normal funding_created message.
@@ -191,8 +228,60 @@ type AssetFundingCreated struct {
 	// channel.
 	TempChanID tlv.RecordT[tlv.TlvType0, funding.PendingChanID]
 
-	// FundingOutputs are the completed set of funding outputs. The remote
-	// party will use the transition (suffix) proofs encoded in the funding
-	// output to be able to create the aux funding+commitment blobs.
-	FundingOutputs tlv.RecordT[tlv.TlvType1, []tappsbt.VOutput]
+	// FundingOutput are the completed set of funding output proofs. The
+	// remote party will use the transition (suffix) proofs encoded in the
+	// funding output to be able to create the aux funding+commitment
+	// blobs.
+	//
+	// TODO(roasbeef): generalize for multiple, needed for multi-asset,
+	// group key, etc.
+	FundingOutput tlv.RecordT[tlv.TlvType1, proof.Proof]
+}
+
+// MsgType returns the type of the message.
+func (a *AssetFundingCreated) MsgType() lnwire.MessageType {
+	return TxAssetInputProofType
+}
+
+// Decode reads the bytes stream and converts it to the object.
+func (t *AssetFundingCreated) Decode(r io.Reader, _ uint32) error {
+	stream, err := tlv.NewStream(
+		t.TempChanID.Record(),
+		t.FundingOutput.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Decode(r)
+}
+
+// Encode converts object to the bytes stream and write it into the
+// write buffer.
+func (t *AssetFundingCreated) Encode(w *bytes.Buffer, _ uint32) error {
+	stream, err := tlv.NewStream(
+		t.TempChanID.Record(),
+		t.FundingOutput.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// PendingChanID returns the temporary channel ID that was assigned to the
+// channel.
+func (t *AssetFundingCreated) PendingChanID() funding.PendingChanID {
+	return t.TempChanID.Val
+}
+
+// FundingAssetID returns the asset ID of the underlying asset.
+func (t *AssetFundingCreated) FundingAssetID() asset.ID {
+	return t.FundingOutput.Val.Asset.ID()
+}
+
+// Amt returns the amount of the asset that this output represents.
+func (t *AssetFundingCreated) Amt() uint64 {
+	return t.FundingOutput.Val.Asset.Amount
 }

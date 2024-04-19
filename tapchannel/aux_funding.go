@@ -268,7 +268,7 @@ type pendingAssetFunding struct {
 
 	fundingAssetCommitment *commitment.TapCommitment
 
-	fundingVOuts []*tappsbt.VOutput
+	fundingOutputProofs []*proof.Proof
 }
 
 // addProof adds a new proof to the set of proofs that'll be used to fund the
@@ -280,11 +280,9 @@ func (p *pendingAssetFunding) addProof(proof *proof.Proof) {
 // assetOutputs returns the set of asset outputs that'll be used to fund the
 // new asset channel.
 func (p *pendingAssetFunding) assetOutputs() []*AssetOutput {
-	return fn.Map(p.fundingVOuts, func(vOut *tappsbt.VOutput) *AssetOutput {
-		return NewAssetOutput(
-			vOut.Asset.ID(), vOut.Asset.Amount,
-			*vOut.ProofSuffix,
-		)
+	return fn.Map(p.fundingOutputProofs, func(p *proof.Proof) *AssetOutput {
+		asset := p.Asset
+		return NewAssetOutput(asset.ID(), asset.Amount, *p)
 	})
 }
 
@@ -362,10 +360,6 @@ func (p *pendingAssetFunding) toAuxFundingDesc(chainParams address.ChainParams,
 		ChainParams: &chainParams,
 	})
 
-	// TODO(roasbeef): we need the local + remote key ring here
-	//  * diff revocation key for the remote + local party
-	//  * if moved to OP_TRUE for local+remote then wouldn't?
-
 	// Encode the commitment blobs for both the local and remote party.
 	// This will be the information for the very first state (state 0).
 	var err error
@@ -383,48 +377,6 @@ func (p *pendingAssetFunding) toAuxFundingDesc(chainParams address.ChainParams,
 	if err != nil {
 		return nil, err
 	}
-
-	// Create the TAP level tapscript tree for the funding output. This'll
-	// be a simply OP_TRUE output, meaning we need no extra signatures for
-	// a valid commitment.
-	fundingScriptTree := NewFundingScriptTree()
-
-	// With all the blobs set, we'll now derive the tapscsript root that
-	// will commit to all the assets in the channel.
-	//
-	// TODO(roasbeef): assumes no group key
-	fundingAsset := assetOutputs[0].Proof.Val.Asset.Copy()
-	fundingAsset.Amount = p.amt
-	fundingAsset.SplitCommitmentRoot = nil
-
-	fundingWitness := fn.Map(p.proofs, func(p *proof.Proof) asset.Witness {
-		return asset.Witness{
-			PrevID: &asset.PrevID{
-				OutPoint: p.OutPoint(),
-				ID:       p.Asset.ID(),
-				ScriptKey: asset.ToSerialized(
-					p.Asset.ScriptKey.PubKey,
-				),
-			},
-		}
-	})
-	fundingAsset.PrevWitnesses = fundingWitness
-
-	// The output script key for the funding output will be just the
-	// OP_TRUE script-only output key.
-	fundingAsset.ScriptKey = asset.ScriptKey{
-		PubKey: fundingScriptTree.TaprootKey,
-	}
-
-	// TODO(roasbeef): needs to be sent over by initiator
-
-	// Finally, we'll derive the tapscript root that'll commit to the new
-	// funding asset output we created above.
-	//tapCommitment, err := commitment.FromAssets(fundingAsset)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//fundingDesc.TapscriptRoot = tapCommitment.TapscriptRoot(nil)
 
 	return &fundingDesc, nil
 }
@@ -467,6 +419,14 @@ func msgToAssetProof(msg lnwire.Message) (AssetFundingMsg, error) {
 
 			return &assetProof, nil
 
+		case AssetFundingCreatedType:
+			var assetProof AssetFundingCreated
+			err := assetProof.Decode(bytes.NewReader(msg.Data), 0)
+			if err != nil {
+				return nil, err
+			}
+
+			return &assetProof, nil
 		default:
 			return nil, fmt.Errorf("unknown custom message "+
 				"type: %v", msg.Type)
@@ -476,6 +436,9 @@ func msgToAssetProof(msg lnwire.Message) (AssetFundingMsg, error) {
 		return msg, nil
 
 	case *TxAssetOutputProof:
+		return msg, nil
+
+	case *AssetFundingCreated:
 		return msg, nil
 
 	default:
@@ -670,7 +633,7 @@ func (f *FundingController) signAllVPackets(ctx context.Context,
 // complete, but unsigned PSBT packet that can be used to create out asset
 // channel.
 func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
-	allPackets []*tappsbt.VPacket) ([]*tappsbt.VOutput, error) {
+	allPackets []*tappsbt.VPacket) ([]*proof.Proof, error) {
 
 	// Given the set of vPackets we've created, we'll now now merge them
 	// all to create a map from output index to final tap commitment.
@@ -693,7 +656,7 @@ func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
 		}
 	}
 
-	var fundingVOuts []*tappsbt.VOutput
+	var fundingProofs []*proof.Proof
 
 	// We're done creating the output commitments, we can now create the
 	// transition proof suffixes. This'll be the new proof we submit to
@@ -715,13 +678,13 @@ func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
 
 			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
 
-			fundingVOuts = append(
-				fundingVOuts, vPkt.Outputs[vOutIdx],
-			)
+			// TODO(roasbeef): 0th index is always the funding
+			// output?
+			fundingProofs = append(fundingProofs, proofSuffix)
 		}
 	}
 
-	return fundingVOuts, nil
+	return fundingProofs, nil
 }
 
 // signAndFinalizePsbt signs and finalizes the PSBT, then returns the finalized
@@ -749,6 +712,25 @@ func (f *FundingController) signAndFinalizePsbt(ctx context.Context,
 	}
 
 	return signedTx, nil
+}
+
+// sendAssetFundingCreated sends the AssetFundingCreated message to the remote
+// party.
+func (f *FundingController) sendAssetFundingCreated(ctx context.Context,
+	fundingState *pendingAssetFunding) error {
+
+	assetFundingCreated := &AssetFundingCreated{
+		TempChanID: tlv.NewPrimitiveRecord[tlv.TlvType0](
+			fundingState.pid,
+		),
+		FundingOutput: tlv.NewRecordT[tlv.TlvType1](
+			*fundingState.fundingOutputProofs[0],
+		),
+	}
+
+	return f.cfg.PeerMessenger.SendMessage(
+		ctx, fundingState.peerPub, assetFundingCreated,
+	)
 }
 
 // completeChannelFunding is the final step in the funding process. This is
@@ -843,7 +825,9 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// With all the vPackets signed, we'll now anchor them to the funding
 	// PSBT. This'll update all the pkScripts for our funding output and
 	// change.
-	fundingVOuts, err := f.anchorVPackets(finalFundedPsbt, signedPkts)
+	fundingOutputProofs, err := f.anchorVPackets(
+		finalFundedPsbt, signedPkts,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to anchor vPackets: %v", err)
 	}
@@ -851,9 +835,15 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// Now that we've anchored the packets, we'll also set the fundingVOuts
 	// which we'll use later to send the AssetFundingCreated message to the
 	// responder, and also return the full AuxFundingDesc back to lnd.
-	fundingState.fundingVOuts = fundingVOuts
+	fundingState.fundingOutputProofs = fundingOutputProofs
 
-	// TODO(roasbeef): send AssetFundingCreated message with fundingVOuts
+	// Before we send the finalized PSBT to lnd, we'll send the
+	// AssetFundingCreated message which will preceded the normal
+	// FundingCreated message.
+	if err := f.sendAssetFundingCreated(ctx, fundingState); err != nil {
+		return nil, fmt.Errorf("unable to send "+
+			"AssetFundingCreated: %w", err)
+	}
 
 	// At this point, we're nearly done, we'll now present the final PSBT
 	// to lnd to verification. If this passes, then we're clear to
@@ -1079,6 +1069,22 @@ func (f *FundingController) chanFunder() {
 				}
 
 				assetFunding.fundingAssetCommitment = fundingCommitment
+
+			// As the responder, we'll get this message after
+			// we send AcceptChannel. This includes the suffix
+			// proof for the funding output/transaction created
+			// by the funding output.
+			case *AssetFundingCreated:
+				// We'll just place this in the internal
+				// funding state so we can derive the funding
+				// desc when we need to.
+				//
+				// TODO(roasbeef): can validate
+				// inclusion/exclusion proofs
+				assetFunding.fundingOutputProofs = append(
+					assetFunding.fundingOutputProofs,
+					&assetProof.FundingOutput.Val,
+				)
 			}
 
 		// A new request for a tapscript root has come across. If we
@@ -1263,9 +1269,20 @@ func (f *FundingController) Name() string {
 func (f *FundingController) CanHandle(msg lnwire.Message) bool {
 	switch msg := msg.(type) {
 	case *lnwire.Custom:
-		return msg.MsgType() == TxAssetInputProofType
+		switch msg.MsgType() {
+		case TxAssetInputProofType:
+			fallthrough
+		case TxAssetOutputProofType:
+			fallthrough
+		case AssetFundingCreatedType:
+			return true
+		}
 
 	case *TxAssetInputProof:
+		return true
+	case *TxAssetOutputProof:
+		return true
+	case *AssetFundingCreated:
 		return true
 	}
 
