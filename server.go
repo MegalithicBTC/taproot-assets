@@ -852,7 +852,8 @@ func (s *Server) VerifySecondLevelSigs(chanState *channeldb.OpenChannel,
 // known due to prior custom channel messages, and maybe returns an aux
 // funding desc which can be used to modify how a channel is funded.
 func (s *Server) DescFromPendingChanID(pid funding.PendingChanID,
-	chanState *channeldb.OpenChannel, keys lnwallet.CommitmentKeyRing,
+	chanState *channeldb.OpenChannel, localKeys,
+	remoteKeys lnwallet.CommitmentKeyRing,
 	initiator bool) (lfn.Option[lnwallet.AuxFundingDesc], error) {
 
 	srvrLog.Debugf("DescFromPendingChanID called")
@@ -865,7 +866,7 @@ func (s *Server) DescFromPendingChanID(pid funding.PendingChanID,
 	}
 
 	return s.cfg.AuxFundingController.DescFromPendingChanID(
-		pid, chanState, keys, initiator,
+		pid, chanState, localKeys, remoteKeys, initiator,
 	)
 }
 
