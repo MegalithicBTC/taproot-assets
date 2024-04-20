@@ -151,7 +151,7 @@ type FundingControllerCfg struct {
 
 	// ChainWallet is the wallet that we'll use to handle the chain
 	// specific
-	ChainWallet tapgarden.WalletAnchor
+	ChainWallet tapfreighter.WalletAnchor
 }
 
 // bindFundingReq is a request to bind a pending channel ID to a complete aux
@@ -752,28 +752,39 @@ func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
 func (f *FundingController) signAndFinalizePsbt(ctx context.Context,
 	pkt *psbt.Packet) (*wire.MsgTx, error) {
 
-	log.Infof("Signing and finalizing PSBT w/ lnd")
+	log.Infof("Signing and finalizing PSBT w/ lnd: %v", spew.Sdump(pkt))
 
-	signedPkt, err := f.cfg.ChainWallet.SignAndFinalizePsbt(ctx, pkt)
+	// By default the wallet won't try to finalize output it sees are watch
+	// only (like the asset input), so we'll have it sign ourselves first.
+	signedPkt, err := f.cfg.ChainWallet.SignPsbt(ctx, pkt)
+	if err != nil {
+		return nil, fmt.Errorf("unable to sign PSBT: %v", err)
+	}
+
+	log.Infof("Signed PSBT: %v", spew.Sdump(signedPkt))
+
+	finalizedPkt, err := f.cfg.ChainWallet.SignAndFinalizePsbt(ctx, signedPkt)
 	if err != nil {
 		return nil, fmt.Errorf("unable to finalize PSBT: %v", err)
 	}
+
+	log.Infof("Finalized PSBT: %v", spew.Sdump(signedPkt))
 
 	// Extra the tx manually, then perform some manual sanity checks to
 	// make sure things are ready for broadcast.
 	//
 	// TODO(roasbeef): could also do testmempoolaccept here
-	signedTx, err := psbt.Extract(signedPkt)
+	finalizedTx, err := psbt.Extract(finalizedPkt)
 	if err != nil {
 		return nil, fmt.Errorf("unable to extract psbt: %w", err)
 	}
-	err = blockchain.CheckTransactionSanity(btcutil.NewTx(signedTx))
+	err = blockchain.CheckTransactionSanity(btcutil.NewTx(finalizedTx))
 	if err != nil {
 		return nil, fmt.Errorf("genesis TX failed final checks: "+
 			"%w", err)
 	}
 
-	return signedTx, nil
+	return finalizedTx, nil
 }
 
 // sendAssetFundingCreated sends the AssetFundingCreated message to the remote
