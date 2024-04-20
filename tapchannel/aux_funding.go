@@ -690,7 +690,8 @@ func (f *FundingController) signAllVPackets(ctx context.Context,
 // complete, but unsigned PSBT packet that can be used to create out asset
 // channel.
 func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
-	allPackets []*tappsbt.VPacket) ([]*proof.Proof, error) {
+	allPackets []*tappsbt.VPacket,
+	fundingScriptKey asset.ScriptKey) ([]*proof.Proof, error) {
 
 	log.Infof("Anchoring funding vPackets to funding PSBT")
 
@@ -737,9 +738,9 @@ func (f *FundingController) anchorVPackets(fundedPkt *tapsend.FundedPsbt,
 
 			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
 
-			// TODO(roasbeef): 0th index is always the funding
-			// output?
-			fundingProofs = append(fundingProofs, proofSuffix)
+			if proofSuffix.Asset.ScriptKey.PubKey.IsEqual(fundingScriptKey.PubKey) {
+				fundingProofs = append(fundingProofs, proofSuffix)
+			}
 		}
 	}
 
@@ -894,8 +895,10 @@ func (f *FundingController) completeChannelFunding(ctx context.Context,
 	// With all the vPackets signed, we'll now anchor them to the funding
 	// PSBT. This'll update all the pkScripts for our funding output and
 	// change.
+	fundingScriptTree := NewFundingScriptTree()
+	fundingScriptKey := asset.NewScriptKey(fundingScriptTree.TaprootKey)
 	fundingOutputProofs, err := f.anchorVPackets(
-		finalFundedPsbt, signedPkts,
+		finalFundedPsbt, signedPkts, fundingScriptKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to anchor vPackets: %v", err)
