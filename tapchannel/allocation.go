@@ -424,6 +424,13 @@ func AssignOutputCommitments(allocations []*Allocation,
 
 	for idx := range allocations {
 		alloc := allocations[idx]
+
+		// Allocations without any assets won't be mapped to an output
+		// commitment.
+		if alloc.Type == AllocationTypeNoAssets {
+			continue
+		}
+
 		outCommitment, ok := outCommitments[alloc.OutputIndex]
 		if !ok {
 			return fmt.Errorf("no output commitment found for "+
