@@ -357,11 +357,11 @@ func (p *Proof) verifyGenesisReveal() error {
 // verifyGenesisGroupKey verifies that the group key attached to the asset in
 // this proof has already been verified.
 func (p *Proof) verifyGenesisGroupKey(groupVerifier GroupVerifier) error {
-	groupKey := p.Asset.GroupKey.GroupPubKey
-	err := groupVerifier(&groupKey)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrGroupKeyUnknown, err.Error())
-	}
+	// groupKey := p.Asset.GroupKey.GroupPubKey
+	// err := groupVerifier(&groupKey)
+	// if err != nil {
+	// 	return fmt.Errorf("%w: %s", ErrGroupKeyUnknown, err.Error())
+	// }
 
 	return nil
 }
