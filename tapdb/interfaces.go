@@ -20,7 +20,7 @@ const (
 	// DefaultNumTxRetries is the default number of times we'll retry a
 	// transaction if it fails with an error that permits transaction
 	// repetition.
-	DefaultNumTxRetries = 10
+	DefaultNumTxRetries = 100
 
 	// DefaultInitialRetryDelay is the default initial delay between
 	// retries. This will be used to generate a random delay between -50%
@@ -28,10 +28,10 @@ const (
 	// doubled after each attempt until we reach DefaultMaxRetryDelay. We
 	// start with a random value to avoid multiple goroutines that are
 	// created at the same time to effectively retry at the same time.
-	DefaultInitialRetryDelay = time.Millisecond * 40
+	DefaultInitialRetryDelay = time.Millisecond * 80
 
 	// DefaultMaxRetryDelay is the default maximum delay between retries.
-	DefaultMaxRetryDelay = time.Second * 3
+	DefaultMaxRetryDelay = time.Second * 6
 )
 
 // TxOptions represents a set of options one can use to control what type of
